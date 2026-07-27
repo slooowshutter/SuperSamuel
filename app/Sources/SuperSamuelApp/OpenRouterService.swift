@@ -3,7 +3,6 @@ import Foundation
 enum OpenRouterServiceError: LocalizedError {
     case missingAPIKey
     case noSpeechDetected
-    case audibleAudioNotTranscribed
     case requestFailed(String)
     case invalidResponse
 
@@ -13,8 +12,6 @@ enum OpenRouterServiceError: LocalizedError {
             return "Add your OpenRouter API key in Settings before recording."
         case .noSpeechDetected:
             return "No speech was detected. The recording was kept so you can retry it or move it to Trash."
-        case .audibleAudioNotTranscribed:
-            return "The saved audio contains a verified signal, but transcription returned no text twice. The audio was kept so retry can send it again."
         case .requestFailed(let message):
             return "OpenRouter request failed: \(message)"
         case .invalidResponse:

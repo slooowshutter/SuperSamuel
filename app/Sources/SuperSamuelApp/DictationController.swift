@@ -9,11 +9,6 @@ private struct DeliveryOptions {
 
 @MainActor
 final class DictationController {
-    private static let preferredChunkDuration: TimeInterval = 2 * 60
-    private static let maximumChunkDuration: TimeInterval = 5 * 60
-    private static let requiredSilenceDuration: TimeInterval = 0.6
-    private static let silenceLevelThreshold: Float = 0.04
-
     private let appState = AppState()
     private let settings = SettingsStore()
     private let permissions = PermissionsService()
@@ -37,17 +32,13 @@ final class DictationController {
 
     private var elapsedTimer: Timer?
     private var startedAt: Date?
-    private var chunkStartedAt: Date?
-    private var chunkSilenceStartedAt: Date?
     private var isStartingRecording = false
-    private var isRotatingChunk = false
     private var hasDetectedMicrophoneSignal = false
     private var isShowingMicrophoneWarning = false
     private var lastTranscript = ""
     private var targetApplication: NSRunningApplication?
     private var activeRecordingID: UUID?
     private var activeInputDevice: AudioInputDeviceInfo?
-    private var lastInputDeviceCheckUptime: TimeInterval = 0
 
     private var processingTask: Task<Void, Never>?
     private var processingSessionID: UUID?
@@ -251,9 +242,7 @@ final class DictationController {
             }
 
             activeRecordingID = session.id
-            let now = Date()
-            startedAt = now
-            chunkStartedAt = now
+            startedAt = Date()
             hasDetectedMicrophoneSignal = false
             isShowingMicrophoneWarning = false
             startElapsedTimer()
@@ -313,103 +302,13 @@ final class DictationController {
         )
     }
 
-    private func rotateChunkIfNeeded(currentLevel: Float) {
-        guard
-            !isRotatingChunk,
-            let sessionID = activeRecordingID,
-            let chunkStartedAt
-        else {
-            return
-        }
-
-        let now = Date()
-        let chunkDuration = now.timeIntervalSince(chunkStartedAt)
-        let shouldForceRotation = chunkDuration >= Self.maximumChunkDuration
-
-        if currentLevel <= Self.silenceLevelThreshold {
-            chunkSilenceStartedAt = chunkSilenceStartedAt ?? now
-        } else {
-            chunkSilenceStartedAt = nil
-        }
-
-        let silenceDuration = chunkSilenceStartedAt.map {
-            now.timeIntervalSince($0)
-        } ?? 0
-        let shouldRotateAtSilence =
-            chunkDuration >= Self.preferredChunkDuration &&
-            silenceDuration >= Self.requiredSilenceDuration
-
-        guard shouldForceRotation || shouldRotateAtSilence else {
-            return
-        }
-
-        isRotatingChunk = true
-        defer { isRotatingChunk = false }
-
-        do {
-            try finishCurrentChunk(sessionID: sessionID)
-            let nextChunkURL = try recordingStore.beginChunk(in: sessionID)
-            let inputDevice = try audioCapture.start(at: nextChunkURL)
-            registerInputDevice(
-                inputDevice,
-                sessionID: sessionID
-            )
-            self.chunkStartedAt = Date()
-            chunkSilenceStartedAt = nil
-        } catch {
-            preserveActiveRecording(message: error.localizedDescription)
-            refreshPersistentMenus()
-            recoverySessionID = sessionID
-            showError(
-                error.localizedDescription,
-                recoverable: true
-            )
-        }
-    }
-
     private func finishCurrentChunk(sessionID: UUID) throws {
-        let duration = chunkStartedAt.map {
-            Date().timeIntervalSince($0)
-        } ?? 0
-        let recordedAudio: RecordedAudio
-        do {
-            recordedAudio = try audioCapture.stop()
-        } catch AudioCaptureError.emptyRecording {
-            if try recordingStore
-                .discardCurrentChunkIfPreviousUsableAudioExists(
-                    in: sessionID
-                )
-            {
-                chunkStartedAt = nil
-                return
-            }
-            throw AudioCaptureError.emptyRecording
-        }
-
+        let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        _ = try audioCapture.stop()
         try recordingStore.finishCurrentChunk(
             in: sessionID,
-            duration: duration,
-            recordedAudio: recordedAudio
+            duration: duration
         )
-        if let summary = recordedAudio.signalSummary,
-           let issue = AudioCaptureHealthPolicy.finalIssue(
-               expectedDuration: duration,
-               framesWritten: recordedAudio.framesWritten ?? 0,
-               persisted: summary
-           )
-        {
-            if issue == .persistedAudioSilent,
-               try recordingStore
-                   .discardCurrentChunkIfPreviousUsableAudioExists(
-                       in: sessionID
-                   )
-            {
-                chunkStartedAt = nil
-                return
-            }
-            throw issue
-        }
-        chunkStartedAt = nil
     }
 
     private func preserveActiveRecording(message: String) {
@@ -872,25 +771,12 @@ final class DictationController {
                 self.appState.setElapsed(
                     seconds: Date().timeIntervalSince(startedAt)
                 )
-                let health = self.audioCapture.healthSnapshot(
-                    elapsed: self.appState.elapsedSeconds
-                )
                 let level = self.audioCapture.currentLevel()
                 self.appState.pushLevel(level)
-                self.monitorInputDevice()
-
-                if let issue = AudioCaptureHealthPolicy.liveIssue(
-                    for: health
-                ) {
-                    self.handleLiveCaptureFailure(issue)
-                    return
-                }
-
                 self.updateMicrophoneSignalStatus(
                     level: level,
                     elapsed: self.appState.elapsedSeconds
                 )
-                self.rotateChunkIfNeeded(currentLevel: level)
             }
         }
     }
@@ -922,78 +808,13 @@ final class DictationController {
         )
     }
 
-    private func handleLiveCaptureFailure(
-        _ issue: AudioCaptureHealthIssue
-    ) {
-        guard let sessionID = activeRecordingID else {
-            return
-        }
-
-        let message = issue.localizedDescription
-        preserveActiveRecording(message: message)
-        recoverySessionID = sessionID
-        showError(message, recoverable: true)
-    }
-
-    private func monitorInputDevice() {
-        guard let sessionID = activeRecordingID else {
-            return
-        }
-
-        let now = ProcessInfo.processInfo.systemUptime
-        guard now - lastInputDeviceCheckUptime >= 1 else {
-            return
-        }
-        lastInputDeviceCheckUptime = now
-
-        let currentDevice = audioCapture.currentInputDeviceInfo()
-        guard currentDevice != activeInputDevice else {
-            return
-        }
-
-        registerInputDevice(
-            currentDevice,
-            sessionID: sessionID
-        )
-        appState.setProgressMessage(
-            "Input changed to \(currentDevice.name) — verifying saved audio..."
-        )
-    }
-
-    private func registerInputDevice(
-        _ inputDevice: AudioInputDeviceInfo,
-        sessionID: UUID
-    ) {
-        let previousDevice = activeInputDevice
-        if previousDevice != inputDevice {
-            do {
-                try recordingStore.recordInputRouteChange(
-                    sessionID: sessionID,
-                    previousDevice: previousDevice,
-                    currentDevice: inputDevice
-                )
-            } catch {
-                print(
-                    "Could not save input route change: \(error.localizedDescription)"
-                )
-            }
-        }
-
-        activeInputDevice = inputDevice
-        appState.recordingDeviceName = inputDevice.name
-    }
-
     private func stopElapsedTimer() {
         elapsedTimer?.invalidate()
         elapsedTimer = nil
         startedAt = nil
-        chunkStartedAt = nil
-        chunkSilenceStartedAt = nil
-        isRotatingChunk = false
         hasDetectedMicrophoneSignal = false
         isShowingMicrophoneWarning = false
         activeInputDevice = nil
-        lastInputDeviceCheckUptime = 0
     }
 
     private func currentPasteTarget() -> NSRunningApplication? {

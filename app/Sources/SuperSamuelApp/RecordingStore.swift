@@ -6,19 +6,15 @@ struct PersistedCleanupOptions: Codable {
     var prompt: String
 }
 
+// ponytail: a session still holds an array of chunks. New recordings always
+// write exactly one, but pending recordings already on disk may have several,
+// and looping over N covers both without a migration.
 struct RecordingChunk: Codable, Identifiable {
     let id: UUID
     let filename: String
     let createdAt: Date
     var duration: TimeInterval?
     var sizeBytes: Int64?
-    var signalSummary: AudioSignalSummary?
-}
-
-struct RecordingInputRouteChange: Codable {
-    let occurredAt: Date
-    let previousDevice: AudioInputDeviceInfo?
-    let currentDevice: AudioInputDeviceInfo
 }
 
 struct RecordingSession: Codable, Identifiable {
@@ -40,7 +36,6 @@ struct RecordingSession: Codable, Identifiable {
     var lastError: String?
     var completedTranscriptID: UUID?
     var inputDevice: AudioInputDeviceInfo?
-    var inputRouteChanges: [RecordingInputRouteChange]?
 }
 
 struct PendingRecordingSummary: Identifiable {
@@ -114,8 +109,7 @@ final class RecordingStore {
             screenshotFilename: nil,
             lastError: nil,
             completedTranscriptID: nil,
-            inputDevice: nil,
-            inputRouteChanges: nil
+            inputDevice: nil
         )
 
         try fileManager.createDirectory(
@@ -130,11 +124,10 @@ final class RecordingStore {
         var session = try load(sessionID)
         let chunk = RecordingChunk(
             id: UUID(),
-            filename: String(format: "chunk-%04d.wav", session.chunks.count + 1),
+            filename: String(format: "chunk-%04d.m4a", session.chunks.count + 1),
             createdAt: Date(),
             duration: nil,
-            sizeBytes: nil,
-            signalSummary: nil
+            sizeBytes: nil
         )
 
         session.status = .recording
@@ -146,8 +139,7 @@ final class RecordingStore {
 
     func finishCurrentChunk(
         in sessionID: UUID,
-        duration: TimeInterval,
-        recordedAudio: RecordedAudio
+        duration: TimeInterval
     ) throws {
         var session = try load(sessionID)
         guard let index = session.chunks.indices.last else {
@@ -156,40 +148,10 @@ final class RecordingStore {
 
         let fileURL = directory(for: sessionID)
             .appendingPathComponent(session.chunks[index].filename)
-        let size = fileSize(at: fileURL)
-        session.chunks[index].duration =
-            recordedAudio.signalSummary?.duration ?? max(0, duration)
-        session.chunks[index].sizeBytes = size
-        session.chunks[index].signalSummary = recordedAudio.signalSummary
+        session.chunks[index].duration = max(0, duration)
+        session.chunks[index].sizeBytes = fileSize(at: fileURL)
         session.updatedAt = Date()
         try save(session)
-    }
-
-    func discardCurrentChunkIfPreviousUsableAudioExists(
-        in sessionID: UUID
-    ) throws -> Bool {
-        var session = try load(sessionID)
-        guard
-            session.chunks.count > 1,
-            session.chunks.dropLast().contains(where: {
-                chunkContainsUsableAudio($0, sessionID: sessionID)
-            })
-        else {
-            return false
-        }
-
-        let discardedChunk = session.chunks.removeLast()
-        session.updatedAt = Date()
-        try save(session)
-
-        let discardedURL = audioURL(
-            for: sessionID,
-            chunk: discardedChunk
-        )
-        if fileManager.fileExists(atPath: discardedURL.path) {
-            try? fileManager.removeItem(at: discardedURL)
-        }
-        return true
     }
 
     func setInputDevice(
@@ -198,24 +160,6 @@ final class RecordingStore {
     ) throws {
         try update(sessionID) { session in
             session.inputDevice = device
-        }
-    }
-
-    func recordInputRouteChange(
-        sessionID: UUID,
-        previousDevice: AudioInputDeviceInfo?,
-        currentDevice: AudioInputDeviceInfo
-    ) throws {
-        try update(sessionID) { session in
-            var changes = session.inputRouteChanges ?? []
-            changes.append(
-                RecordingInputRouteChange(
-                    occurredAt: Date(),
-                    previousDevice: previousDevice,
-                    currentDevice: currentDevice
-                )
-            )
-            session.inputRouteChanges = changes
         }
     }
 
@@ -383,26 +327,13 @@ final class RecordingStore {
                 return nil
             }
 
-            var resolvedChunk = chunk
             let format = url.pathExtension.lowercased()
-            if format == "wav" {
-                guard
-                    let summary = chunk.signalSummary ??
-                        (try? PCM16WAVFile.summarize(at: url)),
-                    summary.hasRecordedSignal
-                else {
-                    return nil
-                }
-                resolvedChunk.signalSummary = summary
-            }
-
             return (
-                resolvedChunk,
+                chunk,
                 RecordedAudio(
                     fileURL: url,
                     format: format,
-                    mimeType: format == "wav" ? "audio/wav" : "audio/mp4",
-                    signalSummary: resolvedChunk.signalSummary
+                    mimeType: format == "wav" ? "audio/wav" : "audio/mp4"
                 )
             )
         }
@@ -595,8 +526,7 @@ final class RecordingStore {
                     byteCount: fileSize(at: url),
                     fileExtension: url.pathExtension
                 ),
-                sizeBytes: fileSize(at: url),
-                signalSummary: nil
+                sizeBytes: fileSize(at: url)
             )
         }
         let session = RecordingSession(
@@ -613,8 +543,7 @@ final class RecordingStore {
             screenshotFilename: nil,
             lastError: "Recovered audio whose metadata could not be read.",
             completedTranscriptID: nil,
-            inputDevice: nil,
-            inputRouteChanges: nil
+            inputDevice: nil
         )
         try save(session)
         return session
@@ -631,24 +560,6 @@ final class RecordingStore {
 
     private func audioURL(for sessionID: UUID, chunk: RecordingChunk) -> URL {
         directory(for: sessionID).appendingPathComponent(chunk.filename)
-    }
-
-    private func chunkContainsUsableAudio(
-        _ chunk: RecordingChunk,
-        sessionID: UUID
-    ) -> Bool {
-        let url = audioURL(for: sessionID, chunk: chunk)
-        guard fileSize(at: url) > 0 else {
-            return false
-        }
-
-        guard url.pathExtension.lowercased() == "wav" else {
-            return true
-        }
-
-        let summary = chunk.signalSummary ??
-            (try? PCM16WAVFile.summarize(at: url))
-        return summary?.hasRecordedSignal == true
     }
 
     private func transcriptURL(
