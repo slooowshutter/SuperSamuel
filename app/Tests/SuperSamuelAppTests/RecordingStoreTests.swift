@@ -4,79 +4,14 @@ import XCTest
 
 @MainActor
 final class RecordingStoreTests: XCTestCase {
-    func testAudioChunksExcludeSilentTail() throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-
-        let audible = try addChunk(
-            to: fixture.store,
-            sessionID: fixture.session.id,
-            sample: 12_000
-        )
-        _ = try addChunk(
-            to: fixture.store,
-            sessionID: fixture.session.id,
-            sample: 0
-        )
-
-        let session = try fixture.store.load(fixture.session.id)
-        let chunks = try fixture.store.audioChunks(for: session)
-
-        XCTAssertEqual(chunks.map(\.0.id), [audible.id])
-    }
-
-    func testDiscardCurrentChunkKeepsEarlierUsableAudio() throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-
-        let audible = try addChunk(
-            to: fixture.store,
-            sessionID: fixture.session.id,
-            sample: 12_000
-        )
-        let emptyURL = try fixture.store.beginChunk(in: fixture.session.id)
-        let writer = try PCM16WAVWriter(fileURL: emptyURL)
-        try writer.close()
-
-        XCTAssertTrue(
-            try fixture.store
-                .discardCurrentChunkIfPreviousUsableAudioExists(
-                    in: fixture.session.id
-                )
-        )
-
-        let session = try fixture.store.load(fixture.session.id)
-        XCTAssertEqual(session.chunks.map(\.id), [audible.id])
-        XCTAssertFalse(FileManager.default.fileExists(atPath: emptyURL.path))
-    }
-
-    func testDiscardCurrentChunkDoesNotDeleteOnlyChunk() throws {
-        let fixture = try makeFixture()
-        defer { try? FileManager.default.removeItem(at: fixture.root) }
-
-        let emptyURL = try fixture.store.beginChunk(in: fixture.session.id)
-        let writer = try PCM16WAVWriter(fileURL: emptyURL)
-        try writer.close()
-
-        XCTAssertFalse(
-            try fixture.store
-                .discardCurrentChunkIfPreviousUsableAudioExists(
-                    in: fixture.session.id
-                )
-        )
-
-        let session = try fixture.store.load(fixture.session.id)
-        XCTAssertEqual(session.chunks.count, 1)
-        XCTAssertTrue(FileManager.default.fileExists(atPath: emptyURL.path))
-    }
-
-    private func makeFixture() throws -> (
-        root: URL,
-        store: RecordingStore,
-        session: RecordingSession
-    ) {
+    /// Records a session end to end the way the app does — begin, write AAC,
+    /// finish, read back — so a regression in the chunk filename, extension or
+    /// mime type fails here instead of at upload time.
+    func testChunkRoundTripsAsUploadableM4A() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
         let store = RecordingStore(rootDirectory: root)
         let session = try store.createSession(
             cleanup: PersistedCleanupOptions(
@@ -85,53 +20,63 @@ final class RecordingStoreTests: XCTestCase {
                 prompt: ""
             )
         )
-        return (root, store, session)
+
+        let fileURL = try store.beginChunk(in: session.id)
+        XCTAssertEqual(fileURL.pathExtension, "m4a")
+        try writeSilentAAC(to: fileURL, seconds: 0.5)
+        try store.finishCurrentChunk(in: session.id, duration: 0.5)
+
+        let chunks = try store.audioChunks(for: store.load(session.id))
+        XCTAssertEqual(chunks.count, 1)
+        XCTAssertEqual(chunks[0].1.format, "m4a")
+        XCTAssertEqual(chunks[0].1.mimeType, "audio/mp4")
+        XCTAssertGreaterThan(chunks[0].0.sizeBytes ?? 0, 0)
+        XCTAssertNoThrow(try AVAudioFile(forReading: chunks[0].1.fileURL))
     }
 
-    private func addChunk(
-        to store: RecordingStore,
-        sessionID: UUID,
-        sample: Int16
-    ) throws -> RecordingChunk {
-        let fileURL = try store.beginChunk(in: sessionID)
+    func testAudioChunksRejectsSessionWithNoAudioOnDisk() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = RecordingStore(rootDirectory: root)
+        let session = try store.createSession(
+            cleanup: PersistedCleanupOptions(
+                isEnabled: false,
+                model: "",
+                prompt: ""
+            )
+        )
+        _ = try store.beginChunk(in: session.id)
+
+        XCTAssertThrowsError(
+            try store.audioChunks(for: store.load(session.id))
+        )
+    }
+
+    private func writeSilentAAC(to url: URL, seconds: Double) throws {
+        let file = try AVAudioFile(
+            forWriting: url,
+            settings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 16_000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 32_000
+            ]
+        )
         let format = try XCTUnwrap(
             AVAudioFormat(
-                commonFormat: .pcmFormatInt16,
+                commonFormat: .pcmFormatFloat32,
                 sampleRate: 16_000,
                 channels: 1,
                 interleaved: false
             )
         )
+        let frames = AVAudioFrameCount(16_000 * seconds)
         let buffer = try XCTUnwrap(
-            AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: 1_600
-            )
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames)
         )
-        buffer.frameLength = 1_600
-        let samples = try XCTUnwrap(buffer.int16ChannelData?[0])
-        for index in 0..<Int(buffer.frameLength) {
-            samples[index] = sample
-        }
-
-        let writer = try PCM16WAVWriter(fileURL: fileURL)
-        try writer.write(from: buffer)
-        try writer.close()
-
-        let summary = try PCM16WAVFile.summarize(at: fileURL)
-        let recordedAudio = RecordedAudio(
-            fileURL: fileURL,
-            format: "wav",
-            mimeType: "audio/wav",
-            signalSummary: summary,
-            framesWritten: summary.frameCount
-        )
-        try store.finishCurrentChunk(
-            in: sessionID,
-            duration: summary.duration,
-            recordedAudio: recordedAudio
-        )
-
-        return try XCTUnwrap(store.load(sessionID).chunks.last)
+        buffer.frameLength = frames
+        try file.write(from: buffer)
     }
 }

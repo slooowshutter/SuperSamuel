@@ -193,42 +193,34 @@ final class OpenRouterServiceTests: XCTestCase {
         sample: Int16
     ) throws -> RecordingChunk {
         let fileURL = try store.beginChunk(in: sessionID)
+        let file = try AVAudioFile(
+            forWriting: fileURL,
+            settings: [
+                AVFormatIDKey: kAudioFormatMPEG4AAC,
+                AVSampleRateKey: 16_000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderBitRateKey: 32_000
+            ]
+        )
         let format = try XCTUnwrap(
             AVAudioFormat(
-                commonFormat: .pcmFormatInt16,
+                commonFormat: .pcmFormatFloat32,
                 sampleRate: 16_000,
                 channels: 1,
                 interleaved: false
             )
         )
         let buffer = try XCTUnwrap(
-            AVAudioPCMBuffer(
-                pcmFormat: format,
-                frameCapacity: 1_600
-            )
+            AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 1_600)
         )
         buffer.frameLength = 1_600
-        let samples = try XCTUnwrap(buffer.int16ChannelData?[0])
+        let samples = try XCTUnwrap(buffer.floatChannelData?[0])
         for index in 0..<Int(buffer.frameLength) {
-            samples[index] = sample
+            samples[index] = Float(sample) / Float(Int16.max)
         }
+        try file.write(from: buffer)
 
-        let writer = try PCM16WAVWriter(fileURL: fileURL)
-        try writer.write(from: buffer)
-        try writer.close()
-
-        let summary = try PCM16WAVFile.summarize(at: fileURL)
-        try store.finishCurrentChunk(
-            in: sessionID,
-            duration: summary.duration,
-            recordedAudio: RecordedAudio(
-                fileURL: fileURL,
-                format: "wav",
-                mimeType: "audio/wav",
-                signalSummary: summary,
-                framesWritten: summary.frameCount
-            )
-        )
+        try store.finishCurrentChunk(in: sessionID, duration: 0.1)
         return try XCTUnwrap(store.load(sessionID).chunks.last)
     }
 }
