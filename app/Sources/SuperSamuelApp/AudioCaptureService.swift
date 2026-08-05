@@ -42,10 +42,15 @@ enum AudioCaptureError: LocalizedError {
 final class AudioCaptureService {
     private let fileManager: FileManager
     private var recorder: AVAudioRecorder?
+    private var recordingActivity: NSObjectProtocol?
     private var displayedLevel: Float = 0
 
     init(fileManager: FileManager = .default) {
         self.fileManager = fileManager
+    }
+
+    deinit {
+        endRecordingActivity()
     }
 
     var isRecording: Bool {
@@ -96,6 +101,13 @@ final class AudioCaptureService {
         }
 
         self.recorder = recorder
+        recordingActivity = ProcessInfo.processInfo.beginActivity(
+            options: [
+                .idleSystemSleepDisabled,
+                .idleDisplaySleepDisabled
+            ],
+            reason: "SuperSamuel is recording audio"
+        )
         displayedLevel = 0
         return currentInputDeviceInfo()
     }
@@ -104,6 +116,7 @@ final class AudioCaptureService {
         guard let recorder else {
             throw AudioCaptureError.recordingFailed("No recording is active.")
         }
+        defer { endRecordingActivity() }
 
         let fileURL = recorder.url
         let duration = recorder.currentTime
@@ -145,5 +158,14 @@ final class AudioCaptureService {
     private func fileSize(at url: URL) -> Int64 {
         let attributes = try? fileManager.attributesOfItem(atPath: url.path)
         return (attributes?[.size] as? NSNumber)?.int64Value ?? 0
+    }
+
+    private func endRecordingActivity() {
+        guard let recordingActivity else {
+            return
+        }
+
+        ProcessInfo.processInfo.endActivity(recordingActivity)
+        self.recordingActivity = nil
     }
 }
