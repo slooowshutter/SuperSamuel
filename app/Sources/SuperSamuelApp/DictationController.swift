@@ -187,7 +187,7 @@ final class DictationController {
             }
         case .recording:
             stopAndProcessRecording()
-        case .transcribing, .cleaning:
+        case .transcribing, .enhancing:
             cancelProcessing()
         }
     }
@@ -220,10 +220,10 @@ final class DictationController {
             try await permissions.ensureMicrophonePermission()
 
             clearAttachedScreenshot()
-            appState.aiCleanupEnabled = settings.cleanupEnabledByDefault
+            appState.enhancementEnabled = settings.enhancementEnabledByDefault
 
             let session = try recordingStore.createSession(
-                cleanup: currentCleanupOptions()
+                cleanup: currentEnhancementOptions()
             )
             let chunkURL = try recordingStore.beginChunk(in: session.id)
 
@@ -267,7 +267,7 @@ final class DictationController {
             try finishCurrentChunk(sessionID: sessionID)
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                cleanup: currentCleanupOptions(),
+                cleanup: currentEnhancementOptions(),
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
         } catch {
@@ -328,7 +328,7 @@ final class DictationController {
         do {
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                cleanup: currentCleanupOptions(),
+                cleanup: currentEnhancementOptions(),
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
             try recordingStore.markFailed(sessionID, message: message)
@@ -437,9 +437,9 @@ final class DictationController {
         case .transcribing:
             phase = .transcribing
             action = "Transcribing"
-        case .cleaning:
-            phase = .cleaning
-            action = "Cleaning"
+        case .enhancing:
+            phase = .enhancing
+            action = "Enhancing"
         }
 
         appState.setPhase(phase)
@@ -716,11 +716,12 @@ final class DictationController {
         return false
     }
 
-    private func currentCleanupOptions() -> PersistedCleanupOptions {
+    private func currentEnhancementOptions() -> PersistedCleanupOptions {
         PersistedCleanupOptions(
-            isEnabled: appState.aiCleanupEnabled,
-            model: settings.cleanupModel,
-            prompt: settings.cleanupPrompt
+            isEnabled: appState.enhancementEnabled,
+            model: settings.enhancementModel,
+            prompt: settings.enhancementPrompt,
+            mode: .audioEnhancement
         )
     }
 

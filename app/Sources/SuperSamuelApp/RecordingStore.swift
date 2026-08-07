@@ -1,9 +1,20 @@
 import Foundation
 
 struct PersistedCleanupOptions: Codable {
+    enum Mode: String, Codable {
+        case audioEnhancement
+    }
+
     var isEnabled: Bool
     var model: String
     var prompt: String
+    // Old pending recordings do not have this field and keep using the legacy
+    // Whisper-then-text-cleanup pipeline when retried.
+    var mode: Mode? = nil
+
+    var usesAudioEnhancement: Bool {
+        mode == .audioEnhancement
+    }
 }
 
 // ponytail: a session still holds an array of chunks. New recordings always
@@ -363,6 +374,9 @@ final class RecordingStore {
             chunkID: chunkID,
             cleaned: cleaned
         )
+        guard fileManager.fileExists(atPath: url.path) else {
+            return nil
+        }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }
@@ -416,6 +430,9 @@ final class RecordingStore {
     func finalTranscript(sessionID: UUID) -> String? {
         let url = directory(for: sessionID)
             .appendingPathComponent("final-transcript.txt")
+        guard fileManager.fileExists(atPath: url.path) else {
+            return nil
+        }
         guard let text = try? String(contentsOf: url, encoding: .utf8) else {
             return nil
         }

@@ -4,6 +4,20 @@ import XCTest
 
 @MainActor
 final class RecordingStoreTests: XCTestCase {
+    func testLegacyCleanupOptionsDecodeWithoutEnhancementMode() throws {
+        let data = Data(
+            #"{"isEnabled":true,"model":"legacy/text-model","prompt":"Clean it"}"#.utf8
+        )
+
+        let options = try JSONDecoder().decode(
+            PersistedCleanupOptions.self,
+            from: data
+        )
+
+        XCTAssertFalse(options.usesAudioEnhancement)
+        XCTAssertNil(options.mode)
+    }
+
     /// Records a session end to end the way the app does — begin, write AAC,
     /// finish, read back — so a regression in the chunk filename, extension or
     /// mime type fails here instead of at upload time.
