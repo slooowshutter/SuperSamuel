@@ -6,7 +6,7 @@ struct AudioInputDeviceInfo: Codable, Equatable {
     let uniqueID: String
 }
 
-struct RecordedAudio {
+struct RecordedAudio: Sendable {
     let fileURL: URL
     let format: String
     let mimeType: String

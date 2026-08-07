@@ -85,7 +85,7 @@ struct RecordingOverlayView: View {
 
     private var controlStrip: some View {
         HStack(spacing: 10) {
-            Toggle("Clean", isOn: $state.aiCleanupEnabled)
+            Toggle("Enhance", isOn: $state.enhancementEnabled)
                 .toggleStyle(.switch)
                 .font(.system(size: 11.5, weight: .medium))
                 .foregroundStyle(Color.white.opacity(0.84))
@@ -226,8 +226,8 @@ struct RecordingOverlayView: View {
             return "Recording · System microphone"
         case .transcribing:
             return "Transcribing"
-        case .cleaning:
-            return "Cleaning"
+        case .enhancing:
+            return "Enhancing"
         case .error:
             return "Needs attention"
         }
@@ -241,7 +241,7 @@ struct RecordingOverlayView: View {
             return Color(red: 1, green: 0.31, blue: 0.38)
         case .transcribing:
             return Color(red: 0.38, green: 0.72, blue: 1)
-        case .cleaning:
+        case .enhancing:
             return Color(red: 0.68, green: 0.55, blue: 1)
         case .error:
             return Color.orange
@@ -256,7 +256,7 @@ struct RecordingOverlayView: View {
         switch state.phase {
         case .recording:
             return "stop.fill"
-        case .transcribing, .cleaning:
+        case .transcribing, .enhancing:
             return "xmark"
         case .idle, .error:
             return "xmark"
@@ -267,7 +267,7 @@ struct RecordingOverlayView: View {
         switch state.phase {
         case .recording:
             return "Stop recording"
-        case .transcribing, .cleaning:
+        case .transcribing, .enhancing:
             return "Cancel processing"
         case .idle, .error:
             return "Dismiss"

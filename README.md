@@ -3,12 +3,14 @@
 SuperSamuel is a small native macOS dictation app:
 
 - Press `Option+Space` to start and stop recording.
-- Record locally as 16 kHz mono WAV audio.
-- Finalize recordings into small, durable chunks.
-- Transcribe durable chunks through OpenRouter with `openai/whisper-large-v3`.
-- Optionally clean the transcript with any OpenRouter model or preset.
+- Record locally as compact 16 kHz mono AAC audio.
+- With **Enhance** off, transcribe through OpenRouter with
+  `openai/whisper-large-v3`.
+- With **Enhance** on, send the audio directly to a configurable audio model,
+  defaulting to `openai/gpt-audio-mini`.
 - Paste the result back into the app that was active while dictating.
-- Optionally attach a screenshot as context for a vision-capable cleanup model.
+- Optionally attach a screenshot as context. Visible text is extracted locally;
+  Gemini audio models can also receive the image itself.
 
 There is no realtime websocket, token broker, or streaming transcript path.
 
@@ -59,13 +61,15 @@ swift build
 1. Open the `SS` menu-bar item.
 2. Choose **Settings…**
 3. Enter your OpenRouter API key. It is stored in the macOS Keychain.
-4. Enter a cleanup model or preset.
+4. Choose a suggested enhancement model or enter another OpenRouter chat model
+   that accepts audio input.
 
 Examples:
 
 ```text
-openai/gpt-5.4-nano
-@preset/my-dictation-cleanup
+openai/gpt-audio-mini
+google/gemini-3.5-flash
+mistralai/voxtral-small-24b-2507
 ```
 
 The transcription model is fixed to:
@@ -74,9 +78,75 @@ The transcription model is fixed to:
 openai/whisper-large-v3
 ```
 
-OpenRouter presets can control model selection, fallbacks, provider routing,
-system prompts, and generation parameters. SuperSamuel does not send a
-request-level temperature for cleanup, so a preset's temperature is preserved.
+Enhancement is a single audio-model request: SuperSamuel does not run Whisper
+first. Requests ask OpenRouter to route to the provider with the highest
+advertised throughput.
+
+## Headless dictation benchmark
+
+The isolated benchmark runner compares the same audio through:
+
+- Whisper only
+- Whisper followed by Gemini with transcript text only
+- Gemini with audio only
+- Whisper followed by Gemini with both the audio and Whisper draft
+
+Audio-model requests default to `google/gemini-3.5-flash` and ask OpenRouter to
+route to the provider with the highest advertised throughput. The runner never
+pastes text, writes transcript history, or deletes a recording session.
+
+Create a private corpus in the gitignored `.context` directory:
+
+```text
+.context/dictation-benchmark/cases/
+  normal-dictation.m4a
+  normal-dictation.reference.txt
+  noisy-product-name.m4a
+  noisy-product-name.reference.txt
+  noisy-product-name.instruction.txt
+```
+
+The reference and per-clip instruction files are optional. Run all four
+strategies from the repository root:
+
+```bash
+cd app
+swift run SuperSamuel benchmark \
+  --input ../.context/dictation-benchmark/cases \
+  --output ../.context/dictation-benchmark/results
+```
+
+Use `--strategies` for a smaller comparison:
+
+```bash
+swift run SuperSamuel benchmark \
+  --input ../.context/dictation-benchmark/cases \
+  --strategies gemini-audio,whisper-gemini-audio
+```
+
+Use `--models` to run the audio strategies against several OpenRouter models.
+Whisper-only still runs once and its draft is shared by every hybrid strategy:
+
+```bash
+swift run SuperSamuel benchmark \
+  --input ../.context/dictation-benchmark/cases \
+  --strategies whisper-only,gemini-audio,whisper-gemini-audio \
+  --models google/gemini-3.5-flash,mistralai/voxtral-small-24b-2507,openai/gpt-audio-mini
+```
+
+Use 16 kHz mono PCM WAV for the broadest cross-model compatibility. Supported
+input formats still depend on the selected model and its routed provider.
+
+The API key comes from `OPENROUTER_API_KEY` when set, otherwise from the same
+Keychain entry as the app. Every run creates a new directory containing:
+
+- `results.jsonl` with the audio hash, exact instruction, model/provider,
+  latency, usage, cost, output, errors, and optional word-error rate
+- `report.md` with a side-by-side comparison and observed completion tokens per
+  second
+
+Throughput routing optimizes OpenRouter's provider choice, while the recorded
+end-to-end latency still includes upload, time-to-first-token, and network time.
 
 ## Permissions
 
@@ -90,9 +160,10 @@ SuperSamuel may request:
 ## Request flow
 
 ```text
-record durable WAV chunks
-  → OpenRouter Whisper Large V3 transcription
-  → optional OpenRouter cleanup
+record durable M4A audio
+  ├─ Enhance off → OpenRouter Whisper Large V3
+  └─ Enhance on  → selected OpenRouter audio model
+                    + optional screenshot-derived context
   → clipboard
   → optional Command+V paste
 ```
@@ -100,12 +171,9 @@ record durable WAV chunks
 The recording file and any attached screenshot are temporary and are removed
 only after the final transcript has been saved successfully.
 
-During recording, the waveform is calculated from the converted samples after
-they have been written successfully, rather than directly from the microphone
-input. SuperSamuel continuously checks write progress and stops with a
-recoverable error if microphone input is present but the saved output is
-silent or stalled. Each completed WAV chunk is reopened and verified for
-readable frames, duration, RMS, and peak level before transcription.
+The waveform is calculated from `AVAudioRecorder` metering while the durable AAC
+file is written. The recorder is recreated for every session so microphone
+hardware changes after sleep or lock do not reuse a stale audio route.
 
 ## Recording recovery
 
@@ -117,13 +185,13 @@ Audio is stored under:
 
 Each recording has its own folder containing:
 
-- WAV chunks finalized at a pause after two minutes, or after five minutes maximum
+- The durable M4A recording (legacy recovered sessions may contain several parts)
 - A JSON manifest
 - Cached raw and cleaned transcript parts
 - The final transcript while processing completes
 - Optional screenshot context
 
-If transcription, cleanup, cancellation, or app shutdown interrupts processing,
+If transcription, enhancement, cancellation, or app shutdown interrupts processing,
 the recording remains in this folder. On the next launch, SuperSamuel presents
 the oldest unsent recording and offers:
 
@@ -133,13 +201,12 @@ the oldest unsent recording and offers:
 
 The menu-bar **Unsent Recordings** submenu also supports sending, revealing the
 folder in Finder, or moving it to Trash after confirmation. The recording
-manifest includes the selected input device, route changes, and per-chunk
-signal measurements. New recordings remain blocked while unsent recordings
+manifest includes the selected input device and the enhancement model chosen
+for that recording. New recordings remain blocked while unsent recordings
 exist.
 
-If transcription returns empty text for a chunk whose saved WAV contains a
-verified signal, SuperSamuel retries once and keeps the audio retryable instead
-of permanently marking it as silence.
+If processing fails, completed parts remain cached and the original audio stays
+available for retry.
 
 Successfully processed text is stored under:
 
@@ -152,25 +219,18 @@ one copies its full text. History remains until explicitly cleared.
 
 ## Upload limits
 
-SuperSamuel sends each chunk through OpenRouter's base64 JSON `input_audio`
-request path. This avoids the **25 MB** cap that applies to OpenAI-compatible
-multipart uploads. Recordings are still split because OpenRouter documents an
-upstream processing timeout of roughly 60 seconds for each transcription
-request.
-
-SuperSamuel records 16 kHz mono, 16-bit WAV and rotates at the first short pause
-after two minutes, with a five-minute hard maximum. Each request is normally
-about 4–10 MB, regardless of the total recording length. Completed chunk
-transcripts are cached, so retrying after a later failure does not retranscribe
-successful chunks. Empty and digitally silent chunks are filtered locally and
-never sent to OpenRouter. If an empty tail follows usable audio, only that tail
-is discarded; the earlier audio and cached transcript parts remain intact.
+SuperSamuel sends audio through OpenRouter's base64 JSON request paths. Durable
+recordings remain compact 32 kbps M4A files (roughly 14 MB/hour). Whisper and
+Gemini receive M4A directly. GPT Audio Mini and the tested Voxtral chat model
+receive a temporary 16 kHz mono PCM WAV because their routed providers rejected
+M4A; the WAV is removed immediately after the request. Successful results are
+cached so a retry does not repeat completed work.
 
 Official references:
 
 - [OpenRouter speech-to-text](https://openrouter.ai/docs/guides/overview/multimodal/stt)
 - [OpenRouter transcription API usage](https://openrouter.ai/docs/guides/overview/multimodal/stt#api-usage)
-- [OpenRouter presets](https://openrouter.ai/docs/guides/features/presets)
+- [OpenRouter audio input](https://openrouter.ai/docs/guides/overview/multimodal/audio)
 
 ## Manual verification
 
@@ -179,10 +239,10 @@ Official references:
 - Cancel during transcription and confirm nothing is pasted.
 - Confirm the cancelled recording appears under **Unsent Recordings**.
 - Relaunch with an unsent recording and test Send, Keep, Reveal, and Delete.
-- Test cleanup with a normal model ID and with `@preset/...`.
-- Test cleanup enabled and disabled.
+- Test enhancement with GPT Audio Mini, Gemini, and a custom audio model ID.
+- Test enhancement enabled and disabled.
 - Test automatic paste in Notes, a browser textarea, and a code editor.
 - Test clipboard restoration.
-- Test screenshot cleanup and fallback when the selected model cannot read images.
+- Test screenshot context with GPT Audio Mini OCR text and Gemini image input.
 - Quit during recording and confirm the saved recording appears after relaunch.
 - Confirm completed transcripts appear in **Transcript History**.

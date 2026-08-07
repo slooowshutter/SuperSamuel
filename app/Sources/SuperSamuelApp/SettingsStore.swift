@@ -7,9 +7,9 @@ final class SettingsStore {
         static let autoPaste = "autoPaste"
         static let restoreClipboard = "restoreClipboard"
         static let legacyOpenRouterAPIKey = "openRouterAPIKey"
-        static let cleanupModel = "openRouterModel"
-        static let cleanupPrompt = "openRouterCleanupPrompt"
-        static let cleanupEnabledByDefault = "aiCleanupEnabledByDefault"
+        static let enhancementModel = "openRouterAudioEnhancementModel"
+        static let enhancementPrompt = "openRouterCleanupPrompt"
+        static let enhancementEnabledByDefault = "aiCleanupEnabledByDefault"
     }
 
     private let defaults: UserDefaults
@@ -46,49 +46,49 @@ final class SettingsStore {
         }
     }
 
-    var cleanupModel: String {
+    var enhancementModel: String {
         get {
-            let value = defaults.string(forKey: Keys.cleanupModel)?
+            let value = defaults.string(forKey: Keys.enhancementModel)?
                 .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return value.isEmpty ? OpenRouterService.defaultCleanupModel : value
+            return value.isEmpty ? OpenRouterService.defaultAudioEnhancementModel : value
         }
         set {
             let value = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
             defaults.set(
-                value.isEmpty ? OpenRouterService.defaultCleanupModel : value,
-                forKey: Keys.cleanupModel
+                value.isEmpty ? OpenRouterService.defaultAudioEnhancementModel : value,
+                forKey: Keys.enhancementModel
             )
         }
     }
 
-    var cleanupPrompt: String {
+    var enhancementPrompt: String {
         get {
-            defaults.string(forKey: Keys.cleanupPrompt)
+            defaults.string(forKey: Keys.enhancementPrompt)
                 ?? OpenRouterService.defaultCleanupInstruction
         }
-        set { defaults.set(newValue, forKey: Keys.cleanupPrompt) }
+        set { defaults.set(newValue, forKey: Keys.enhancementPrompt) }
     }
 
-    var cleanupEnabledByDefault: Bool {
-        get { defaults.bool(forKey: Keys.cleanupEnabledByDefault) }
-        set { defaults.set(newValue, forKey: Keys.cleanupEnabledByDefault) }
+    var enhancementEnabledByDefault: Bool {
+        get { defaults.bool(forKey: Keys.enhancementEnabledByDefault) }
+        set { defaults.set(newValue, forKey: Keys.enhancementEnabledByDefault) }
     }
 
     var hasOpenRouterAPIKey: Bool {
         !openRouterAPIKey.isEmpty
     }
 
-    var hasCleanupConfiguration: Bool {
-        hasOpenRouterAPIKey && !cleanupModel.isEmpty
+    var hasEnhancementConfiguration: Bool {
+        hasOpenRouterAPIKey && !enhancementModel.isEmpty
     }
 
     private func registerDefaults() {
         defaults.register(defaults: [
             Keys.autoPaste: true,
             Keys.restoreClipboard: true,
-            Keys.cleanupModel: OpenRouterService.defaultCleanupModel,
-            Keys.cleanupPrompt: OpenRouterService.defaultCleanupInstruction,
-            Keys.cleanupEnabledByDefault: true
+            Keys.enhancementModel: OpenRouterService.defaultAudioEnhancementModel,
+            Keys.enhancementPrompt: OpenRouterService.defaultCleanupInstruction,
+            Keys.enhancementEnabledByDefault: true
         ])
     }
 

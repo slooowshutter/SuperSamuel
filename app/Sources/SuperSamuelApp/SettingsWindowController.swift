@@ -30,7 +30,7 @@ final class SettingsWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 650),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 720),
             styleMask: [
                 .titled,
                 .closable,
@@ -59,16 +59,32 @@ private struct SettingsView: View {
     private let settings: SettingsStore
 
     @State private var openRouterAPIKey: String
-    @State private var cleanupModel: String
-    @State private var cleanupPrompt: String
-    @State private var cleanupEnabledByDefault: Bool
+    @State private var enhancementModel: String
+    @State private var enhancementPrompt: String
+    @State private var enhancementEnabledByDefault: Bool
+
+    private static let customModelSelection = "__custom__"
+    private static let suggestedModels = [
+        EnhancementModelPreset(
+            id: "openai/gpt-audio-mini",
+            label: "GPT Audio Mini — Best quality"
+        ),
+        EnhancementModelPreset(
+            id: "mistralai/voxtral-small-24b-2507",
+            label: "Voxtral Small 24B — Balanced"
+        ),
+        EnhancementModelPreset(
+            id: "google/gemini-3.5-flash",
+            label: "Gemini 3.5 Flash — Fast"
+        )
+    ]
 
     init(settings: SettingsStore) {
         self.settings = settings
         _openRouterAPIKey = State(initialValue: settings.openRouterAPIKey)
-        _cleanupModel = State(initialValue: settings.cleanupModel)
-        _cleanupPrompt = State(initialValue: settings.cleanupPrompt)
-        _cleanupEnabledByDefault = State(initialValue: settings.cleanupEnabledByDefault)
+        _enhancementModel = State(initialValue: settings.enhancementModel)
+        _enhancementPrompt = State(initialValue: settings.enhancementPrompt)
+        _enhancementEnabledByDefault = State(initialValue: settings.enhancementEnabledByDefault)
     }
 
     @ViewBuilder
@@ -94,7 +110,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "OpenRouter",
-                    description: "The same API key is used for Whisper transcription and optional transcript cleanup."
+                    description: "The same API key is used for fast Whisper transcription and optional audio enhancement."
                 ) {
                     SecureField("sk-or-v1-...", text: apiKeyBinding)
                         .textFieldStyle(.plain)
@@ -110,7 +126,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "Transcription",
-                    description: "Recordings are captured locally as durable 16 kHz mono WAV chunks, then sent after you stop recording."
+                    description: "With Enhance off, recordings use the fast, literal transcription path."
                 ) {
                     labeledValue(
                         label: "Model",
@@ -119,48 +135,62 @@ private struct SettingsView: View {
                 }
 
                 section(
-                    title: "AI Cleanup",
-                    description: "After transcription, optionally rewrite spoken dictation into clean text without changing its meaning."
+                    title: "Audio Enhancement",
+                    description: "With Enhance on, the selected audio model listens directly to the recording and returns clean, ready-to-paste text. Whisper is not run first."
                 ) {
                     Toggle(
-                        "Enable cleanup by default",
-                        isOn: cleanupEnabledByDefaultBinding
+                        "Enable enhancement by default",
+                        isOn: enhancementEnabledByDefaultBinding
                     )
 
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("Cleanup model or preset")
+                        Text("Audio model")
                             .font(.system(size: 13, weight: .semibold))
 
-                        Text("Enter an OpenRouter model ID or a preset such as @preset/my-dictation-cleanup.")
+                        Picker("Suggested model", selection: enhancementPresetBinding) {
+                            ForEach(Self.suggestedModels) { preset in
+                                Text(preset.label).tag(preset.id)
+                            }
+                            Divider()
+                            Text("Custom OpenRouter model…")
+                                .tag(Self.customModelSelection)
+                        }
+                        .pickerStyle(.menu)
+
+                        Text("Choose a suggestion or enter any OpenRouter chat model that accepts audio input.")
                             .font(.system(size: 12))
                             .foregroundStyle(.secondary)
 
-                        TextField("@preset/my-dictation-cleanup", text: cleanupModelBinding)
+                        TextField("openai/gpt-audio-mini", text: enhancementModelBinding)
                             .textFieldStyle(.plain)
                             .font(.system(size: 12, design: .monospaced))
                             .padding(.horizontal, 11)
                             .padding(.vertical, 9)
                             .liquidGlassSurface(cornerRadius: 11)
+
+                        Text("Screenshot text is extracted locally for every model. Gemini models also receive the screenshot image.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Cleanup instructions")
+                            Text("Enhancement instructions")
                                 .font(.system(size: 13, weight: .semibold))
 
                             Spacer()
 
                             Button("Restore Default") {
-                                cleanupPrompt = OpenRouterService.defaultCleanupInstruction
-                                settings.cleanupPrompt = OpenRouterService.defaultCleanupInstruction
+                                enhancementPrompt = OpenRouterService.defaultCleanupInstruction
+                                settings.enhancementPrompt = OpenRouterService.defaultCleanupInstruction
                             }
                             .liquidGlassButton(
                                 tint: Color.accentColor.opacity(0.78)
                             )
-                            .disabled(cleanupPrompt == OpenRouterService.defaultCleanupInstruction)
+                            .disabled(enhancementPrompt == OpenRouterService.defaultCleanupInstruction)
                         }
 
-                        TextEditor(text: cleanupPromptBinding)
+                        TextEditor(text: enhancementPromptBinding)
                             .font(.system(size: 13))
                             .scrollContentBackground(.hidden)
                             .padding(8)
@@ -174,7 +204,7 @@ private struct SettingsView: View {
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 680, minHeight: 650)
+        .frame(minWidth: 680, minHeight: 720)
     }
 
     private var apiKeyBinding: Binding<String> {
@@ -187,32 +217,49 @@ private struct SettingsView: View {
         )
     }
 
-    private var cleanupModelBinding: Binding<String> {
+    private var enhancementModelBinding: Binding<String> {
         Binding(
-            get: { cleanupModel },
+            get: { enhancementModel },
             set: { value in
-                cleanupModel = value
-                settings.cleanupModel = value
+                enhancementModel = value
+                settings.enhancementModel = value
             }
         )
     }
 
-    private var cleanupPromptBinding: Binding<String> {
+    private var enhancementPromptBinding: Binding<String> {
         Binding(
-            get: { cleanupPrompt },
+            get: { enhancementPrompt },
             set: { value in
-                cleanupPrompt = value
-                settings.cleanupPrompt = value
+                enhancementPrompt = value
+                settings.enhancementPrompt = value
             }
         )
     }
 
-    private var cleanupEnabledByDefaultBinding: Binding<Bool> {
+    private var enhancementEnabledByDefaultBinding: Binding<Bool> {
         Binding(
-            get: { cleanupEnabledByDefault },
+            get: { enhancementEnabledByDefault },
             set: { value in
-                cleanupEnabledByDefault = value
-                settings.cleanupEnabledByDefault = value
+                enhancementEnabledByDefault = value
+                settings.enhancementEnabledByDefault = value
+            }
+        )
+    }
+
+    private var enhancementPresetBinding: Binding<String> {
+        Binding(
+            get: {
+                Self.suggestedModels.contains { $0.id == enhancementModel }
+                    ? enhancementModel
+                    : Self.customModelSelection
+            },
+            set: { selection in
+                guard selection != Self.customModelSelection else {
+                    return
+                }
+                enhancementModel = selection
+                settings.enhancementModel = selection
             }
         )
     }
@@ -252,4 +299,9 @@ private struct SettingsView: View {
         .padding(.vertical, 10)
         .liquidGlassSurface(cornerRadius: 11)
     }
+}
+
+private struct EnhancementModelPreset: Identifiable {
+    let id: String
+    let label: String
 }
