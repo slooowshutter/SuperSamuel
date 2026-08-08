@@ -535,6 +535,21 @@ final class OpenRouterServiceTests: XCTestCase {
             try historyStore.item(id: session.id)?.text,
             "first part\n\nsecond part"
         )
+        let archive = try XCTUnwrap(historyStore.artifactURL(for: session.id))
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: archive.appendingPathComponent(firstChunk.filename).path
+            )
+        )
+        XCTAssertTrue(
+            FileManager.default.fileExists(
+                atPath: archive.appendingPathComponent(secondChunk.filename).path
+            )
+        )
+        XCTAssertEqual(
+            try historyStore.metadata(id: session.id)?.workflow.workflow,
+            .whisperOnly
+        )
     }
 
     @MainActor

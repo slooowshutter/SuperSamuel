@@ -57,9 +57,9 @@ final class RecordingProcessor {
         }
 
         try Task.checkCancellation()
-        let historyItem = try historyStore.save(
-            recordingID: session.id,
-            createdAt: session.createdAt,
+        let historyItem = try historyStore.archive(
+            session: session,
+            recordingDirectory: recordingStore.directoryURL(for: session.id),
             text: finalTranscript
         )
         try recordingStore.markCompleted(

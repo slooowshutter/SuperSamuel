@@ -50,6 +50,7 @@ final class DictationController {
     func start() {
         configureOverlay()
         configureMenuBar()
+        removeRecordingCopiesAlreadyInHistory()
         try? recordingStore.recoverInterruptedSessions()
 
         if !hotkeyService.start(onTrigger: { [weak self] in
@@ -167,6 +168,11 @@ final class DictationController {
         menuBarController.onCopyHistoryTranscript = { [weak self] id in
             Task { @MainActor [weak self] in
                 self?.copyHistoryTranscript(id)
+            }
+        }
+        menuBarController.onRevealHistoryTranscript = { [weak self] id in
+            Task { @MainActor [weak self] in
+                self?.revealHistoryTranscript(id)
             }
         }
         menuBarController.onClearTranscriptHistory = { [weak self] in
@@ -569,6 +575,19 @@ final class DictationController {
         ])
     }
 
+    private func removeRecordingCopiesAlreadyInHistory() {
+        guard let sessions = try? recordingStore.pendingSessions() else {
+            return
+        }
+
+        for session in sessions {
+            guard (try? historyStore.item(id: session.id)) != nil else {
+                continue
+            }
+            try? recordingStore.deleteSession(session.id)
+        }
+    }
+
     private func presentOldestPendingRecording() {
         guard
             !isRecoveryPromptVisible,
@@ -656,11 +675,19 @@ final class DictationController {
         }
     }
 
+    private func revealHistoryTranscript(_ id: UUID) {
+        guard let url = historyStore.artifactURL(for: id) else {
+            return
+        }
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
     private func confirmAndClearTranscriptHistory() {
         let alert = NSAlert()
         alert.messageText = "Clear transcript history?"
         alert.informativeText =
-            "This deletes saved transcript text. Pending audio recordings are not affected."
+            "This permanently deletes every archived recording, transcript, " +
+            "and metadata file. Pending unsent recordings are not affected."
         alert.alertStyle = .warning
         alert.addButton(withTitle: "Clear History")
         alert.addButton(withTitle: "Cancel")

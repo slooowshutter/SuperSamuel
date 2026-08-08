@@ -168,8 +168,9 @@ record durable M4A audio
   → optional Command+V paste
 ```
 
-The recording file and any attached screenshot are temporary and are removed
-only after the final transcript has been saved successfully.
+After a successful transcription, the recording, transcript artifacts, metadata,
+and any attached screenshot are moved together into the permanent transcript
+history. They remain there until history is explicitly cleared.
 
 The waveform is calculated from `AVAudioRecorder` metering while the durable AAC
 file is written. The recorder is recreated for every session so microphone
@@ -214,8 +215,20 @@ Successfully processed text is stored under:
 ~/Library/Application Support/SuperSamuel/Transcript History/
 ```
 
-The **Transcript History** submenu shows recent transcript previews. Selecting
-one copies its full text. History remains until explicitly cleared.
+Every new transcript has its own UUID-named folder containing:
+
+- The original durable M4A recording (or all parts from a recovered legacy session)
+- `transcript.txt` and the cached raw, cleaned, and final transcript artifacts
+- `metadata.json` with the workflow, requested models, configured prompt, audio
+  duration and size, input device, screenshot usage, timestamps, app version,
+  and macOS version
+- The original recording manifest and optional screenshot context
+
+The **Transcript History** submenu shows recent transcript previews. Each entry
+offers **Copy Transcript** and **Reveal Recording and Transcript in Finder**.
+Older flat JSON history entries remain readable, while new entries use the
+complete folder format. History remains until explicitly cleared; clearing it
+also permanently deletes its archived recordings and metadata.
 
 ## Upload limits
 
