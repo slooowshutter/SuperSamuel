@@ -12,6 +12,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     var onDeletePendingRecording: ((UUID) -> Void)?
     var onRevealPendingRecording: ((UUID) -> Void)?
     var onCopyHistoryTranscript: ((UUID) -> Void)?
+    var onRevealHistoryTranscript: ((UUID) -> Void)?
     var onClearTranscriptHistory: (() -> Void)?
 
     private let statusItem: NSStatusItem
@@ -233,12 +234,31 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             for transcript in transcriptHistory {
                 let item = NSMenuItem(
                     title: transcriptTitle(transcript),
+                    action: nil,
+                    keyEquivalent: ""
+                )
+                item.toolTip = transcript.text
+                let actions = NSMenu()
+
+                let copyItem = NSMenuItem(
+                    title: "Copy Transcript",
                     action: #selector(handleCopyHistoryTranscript(_:)),
                     keyEquivalent: ""
                 )
-                item.target = self
-                item.representedObject = transcript.id.uuidString
-                item.toolTip = transcript.text
+                copyItem.target = self
+                copyItem.representedObject = transcript.id.uuidString
+                actions.addItem(copyItem)
+
+                let revealItem = NSMenuItem(
+                    title: "Reveal Recording and Transcript in Finder",
+                    action: #selector(handleRevealHistoryTranscript(_:)),
+                    keyEquivalent: ""
+                )
+                revealItem.target = self
+                revealItem.representedObject = transcript.id.uuidString
+                actions.addItem(revealItem)
+
+                item.submenu = actions
                 menu.addItem(item)
             }
 
@@ -364,6 +384,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             return
         }
         onCopyHistoryTranscript?(id)
+    }
+
+    @objc
+    private func handleRevealHistoryTranscript(_ sender: NSMenuItem) {
+        guard
+            let rawID = sender.representedObject as? String,
+            let id = UUID(uuidString: rawID)
+        else {
+            return
+        }
+        onRevealHistoryTranscript?(id)
     }
 
     @objc
