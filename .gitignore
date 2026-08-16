@@ -9,6 +9,10 @@ app/*.app/
 .swiftpm/
 Packages/
 
+# Python
+__pycache__/
+*.py[cod]
+
 # Xcode
 DerivedData/
 build/

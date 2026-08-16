@@ -277,12 +277,12 @@ final class TranscriptHistoryStore {
             configuredPrompt = session.cleanup.prompt
         } else if session.cleanup.isEnabled {
             workflow = .whisperThenTextLLM
-            transcriptionModel = OpenRouterService.transcriptionModel
+            transcriptionModel = session.resolvedTranscriptionModel
             enhancementModel = resolvedEnhancementModel(for: session.cleanup)
             configuredPrompt = session.cleanup.prompt
         } else {
             workflow = .whisperOnly
-            transcriptionModel = OpenRouterService.transcriptionModel
+            transcriptionModel = session.resolvedTranscriptionModel
             enhancementModel = nil
             configuredPrompt = nil
         }

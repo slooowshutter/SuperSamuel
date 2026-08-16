@@ -229,7 +229,8 @@ final class DictationController {
             appState.enhancementEnabled = settings.enhancementEnabledByDefault
 
             let session = try recordingStore.createSession(
-                cleanup: currentEnhancementOptions()
+                cleanup: currentEnhancementOptions(),
+                transcriptionModel: settings.transcriptionModel
             )
             let chunkURL = try recordingStore.beginChunk(in: session.id)
 
@@ -274,6 +275,7 @@ final class DictationController {
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
                 cleanup: currentEnhancementOptions(),
+                transcriptionModel: settings.transcriptionModel,
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
         } catch {
@@ -335,6 +337,7 @@ final class DictationController {
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
                 cleanup: currentEnhancementOptions(),
+                transcriptionModel: settings.transcriptionModel,
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
             try recordingStore.markFailed(sessionID, message: message)

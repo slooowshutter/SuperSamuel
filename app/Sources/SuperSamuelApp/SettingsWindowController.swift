@@ -59,6 +59,7 @@ private struct SettingsView: View {
     private let settings: SettingsStore
 
     @State private var openRouterAPIKey: String
+    @State private var transcriptionModel: String
     @State private var enhancementModel: String
     @State private var enhancementPrompt: String
     @State private var enhancementEnabledByDefault: Bool
@@ -82,6 +83,7 @@ private struct SettingsView: View {
     init(settings: SettingsStore) {
         self.settings = settings
         _openRouterAPIKey = State(initialValue: settings.openRouterAPIKey)
+        _transcriptionModel = State(initialValue: settings.transcriptionModel)
         _enhancementModel = State(initialValue: settings.enhancementModel)
         _enhancementPrompt = State(initialValue: settings.enhancementPrompt)
         _enhancementEnabledByDefault = State(initialValue: settings.enhancementEnabledByDefault)
@@ -128,10 +130,19 @@ private struct SettingsView: View {
                     title: "Transcription",
                     description: "With Enhance off, recordings use the fast, literal transcription path."
                 ) {
-                    labeledValue(
-                        label: "Model",
-                        value: OpenRouterService.transcriptionModel
+                    TextField(
+                        OpenRouterService.transcriptionModel,
+                        text: transcriptionModelBinding
                     )
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
+                    .liquidGlassSurface(cornerRadius: 11)
+
+                    Text("Enter any OpenRouter model supported by the audio transcription endpoint. Clear the field to restore the default.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
                 }
 
                 section(
@@ -227,6 +238,16 @@ private struct SettingsView: View {
         )
     }
 
+    private var transcriptionModelBinding: Binding<String> {
+        Binding(
+            get: { transcriptionModel },
+            set: { value in
+                transcriptionModel = value
+                settings.transcriptionModel = value
+            }
+        )
+    }
+
     private var enhancementPromptBinding: Binding<String> {
         Binding(
             get: { enhancementPrompt },
@@ -284,21 +305,6 @@ private struct SettingsView: View {
         .liquidGlassSurface(cornerRadius: 18)
     }
 
-    private func labeledValue(label: String, value: String) -> some View {
-        HStack(spacing: 12) {
-            Text(label)
-                .font(.system(size: 12, weight: .medium))
-
-            Spacer()
-
-            Text(value)
-                .font(.system(size: 12, design: .monospaced))
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-        .liquidGlassSurface(cornerRadius: 11)
-    }
 }
 
 private struct EnhancementModelPreset: Identifiable {

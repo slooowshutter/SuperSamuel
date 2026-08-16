@@ -129,6 +129,7 @@ final class RecordingProcessor {
                 do {
                     let transcript = try await openRouterService.transcribe(
                         apiKey: apiKey,
+                        model: session.resolvedTranscriptionModel,
                         audio: item.1
                     )
                     try recordingStore.saveTranscript(

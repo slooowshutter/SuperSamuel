@@ -43,10 +43,19 @@ struct RecordingSession: Codable, Identifiable {
     var status: Status
     var chunks: [RecordingChunk]
     var cleanup: PersistedCleanupOptions
+    // Optional so manifests created before transcription models were
+    // configurable continue to decode and use the original default.
+    var transcriptionModel: String?
     var screenshotFilename: String?
     var lastError: String?
     var completedTranscriptID: UUID?
     var inputDevice: AudioInputDeviceInfo?
+
+    var resolvedTranscriptionModel: String {
+        let model = transcriptionModel?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return model.isEmpty ? OpenRouterService.transcriptionModel : model
+    }
 }
 
 struct PendingRecordingSummary: Identifiable {
@@ -106,7 +115,10 @@ final class RecordingStore {
         self.decoder = decoder
     }
 
-    func createSession(cleanup: PersistedCleanupOptions) throws -> RecordingSession {
+    func createSession(
+        cleanup: PersistedCleanupOptions,
+        transcriptionModel: String = OpenRouterService.transcriptionModel
+    ) throws -> RecordingSession {
         try ensureDirectories()
 
         let now = Date()
@@ -117,6 +129,7 @@ final class RecordingStore {
             status: .recording,
             chunks: [],
             cleanup: cleanup,
+            transcriptionModel: transcriptionModel,
             screenshotFilename: nil,
             lastError: nil,
             completedTranscriptID: nil,
@@ -177,10 +190,12 @@ final class RecordingStore {
     func prepareForProcessing(
         sessionID: UUID,
         cleanup: PersistedCleanupOptions,
+        transcriptionModel: String = OpenRouterService.transcriptionModel,
         screenshotSourceURL: URL?
     ) throws {
         var session = try load(sessionID)
         session.cleanup = cleanup
+        session.transcriptionModel = transcriptionModel
         session.status = .ready
         session.updatedAt = Date()
         session.lastError = nil
@@ -557,6 +572,7 @@ final class RecordingStore {
                 model: OpenRouterService.defaultCleanupModel,
                 prompt: OpenRouterService.defaultCleanupInstruction
             ),
+            transcriptionModel: OpenRouterService.transcriptionModel,
             screenshotFilename: nil,
             lastError: "Recovered audio whose metadata could not be read.",
             completedTranscriptID: nil,

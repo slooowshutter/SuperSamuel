@@ -7,6 +7,7 @@ final class SettingsStore {
         static let autoPaste = "autoPaste"
         static let restoreClipboard = "restoreClipboard"
         static let legacyOpenRouterAPIKey = "openRouterAPIKey"
+        static let transcriptionModel = "openRouterTranscriptionModel"
         static let enhancementModel = "openRouterAudioEnhancementModel"
         static let enhancementPrompt = "openRouterCleanupPrompt"
         static let enhancementEnabledByDefault = "aiCleanupEnabledByDefault"
@@ -61,6 +62,21 @@ final class SettingsStore {
         }
     }
 
+    var transcriptionModel: String {
+        get {
+            let value = defaults.string(forKey: Keys.transcriptionModel)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty ? OpenRouterService.transcriptionModel : value
+        }
+        set {
+            let value = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            defaults.set(
+                value.isEmpty ? OpenRouterService.transcriptionModel : value,
+                forKey: Keys.transcriptionModel
+            )
+        }
+    }
+
     var enhancementPrompt: String {
         get {
             defaults.string(forKey: Keys.enhancementPrompt)
@@ -86,6 +102,7 @@ final class SettingsStore {
         defaults.register(defaults: [
             Keys.autoPaste: true,
             Keys.restoreClipboard: true,
+            Keys.transcriptionModel: OpenRouterService.transcriptionModel,
             Keys.enhancementModel: OpenRouterService.defaultAudioEnhancementModel,
             Keys.enhancementPrompt: OpenRouterService.defaultCleanupInstruction,
             Keys.enhancementEnabledByDefault: true

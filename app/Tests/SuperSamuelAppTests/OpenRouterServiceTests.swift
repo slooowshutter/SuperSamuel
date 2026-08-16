@@ -10,6 +10,7 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     func testTranscriptionUsesBase64JSONRequest() async throws {
+        let selectedModel = "custom/transcription-model"
         let audioData = Data("wave-audio".utf8)
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).wav")
@@ -29,7 +30,7 @@ final class OpenRouterServiceTests: XCTestCase {
             )
             XCTAssertEqual(
                 payload["model"] as? String,
-                OpenRouterService.transcriptionModel
+                selectedModel
             )
             XCTAssertEqual(payload["temperature"] as? Int, 0)
 
@@ -61,6 +62,7 @@ final class OpenRouterServiceTests: XCTestCase {
 
         let transcript = try await service.transcribe(
             apiKey: "test-key",
+            model: selectedModel,
             audio: RecordedAudio(
                 fileURL: fileURL,
                 format: "wav",

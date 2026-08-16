@@ -4,8 +4,8 @@ SuperSamuel is a small native macOS dictation app:
 
 - Press `Option+Space` to start and stop recording.
 - Record locally as compact 16 kHz mono AAC audio.
-- With **Enhance** off, transcribe through OpenRouter with
-  `openai/whisper-large-v3`.
+- With **Enhance** off, transcribe through OpenRouter with a configurable
+  transcription model, defaulting to `openai/whisper-large-v3`.
 - With **Enhance** on, send the audio directly to a configurable audio model,
   defaulting to `openai/gpt-audio-mini`.
 - Paste the result back into the app that was active while dictating.
@@ -61,7 +61,8 @@ swift build
 1. Open the `SS` menu-bar item.
 2. Choose **Settings…**
 3. Enter your OpenRouter API key. It is stored in the macOS Keychain.
-4. Choose a suggested enhancement model or enter another OpenRouter chat model
+4. Optionally change the transcription model from `openai/whisper-large-v3`.
+5. Choose a suggested enhancement model or enter another OpenRouter chat model
    that accepts audio input.
 
 Examples:
@@ -72,7 +73,7 @@ google/gemini-3.5-flash
 mistralai/voxtral-small-24b-2507
 ```
 
-The transcription model is fixed to:
+The default transcription model is:
 
 ```text
 openai/whisper-large-v3
@@ -161,7 +162,7 @@ SuperSamuel may request:
 
 ```text
 record durable M4A audio
-  ├─ Enhance off → OpenRouter Whisper Large V3
+  ├─ Enhance off → selected OpenRouter transcription model
   └─ Enhance on  → selected OpenRouter audio model
                     + optional screenshot-derived context
   → clipboard
@@ -202,9 +203,9 @@ the oldest unsent recording and offers:
 
 The menu-bar **Unsent Recordings** submenu also supports sending, revealing the
 folder in Finder, or moving it to Trash after confirmation. The recording
-manifest includes the selected input device and the enhancement model chosen
-for that recording. New recordings remain blocked while unsent recordings
-exist.
+manifest includes the selected input device, transcription model, and
+enhancement model chosen for that recording. New recordings remain blocked
+while unsent recordings exist.
 
 If processing fails, completed parts remain cached and the original audio stays
 available for retry.

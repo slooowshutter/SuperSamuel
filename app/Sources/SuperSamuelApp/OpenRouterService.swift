@@ -36,15 +36,39 @@ actor OpenRouterService: DictationTransport {
         self.urlSession = urlSession
     }
 
-    func transcribe(apiKey: String, audio: RecordedAudio) async throws -> String {
-        try await performTranscription(apiKey: apiKey, audio: audio).text
+    func transcribe(
+        apiKey: String,
+        model: String = OpenRouterService.transcriptionModel,
+        audio: RecordedAudio
+    ) async throws -> String {
+        try await performTranscription(
+            apiKey: apiKey,
+            model: model,
+            audio: audio
+        ).text
     }
 
     func performTranscription(
         apiKey: String,
         audio: RecordedAudio
     ) async throws -> OpenRouterTextResponse {
+        try await performTranscription(
+            apiKey: apiKey,
+            model: Self.transcriptionModel,
+            audio: audio
+        )
+    }
+
+    func performTranscription(
+        apiKey: String,
+        model: String,
+        audio: RecordedAudio
+    ) async throws -> OpenRouterTextResponse {
         let apiKey = try validatedAPIKey(apiKey)
+        let requestedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        let selectedModel = requestedModel.isEmpty
+            ? Self.transcriptionModel
+            : requestedModel
         let audioData = try Data(contentsOf: audio.fileURL)
 
         var request = URLRequest(url: transcriptionURL)
@@ -54,7 +78,7 @@ actor OpenRouterService: DictationTransport {
         request.timeoutInterval = 120
         request.httpBody = try JSONSerialization.data(
             withJSONObject: [
-                "model": Self.transcriptionModel,
+                "model": selectedModel,
                 "input_audio": [
                     "data": audioData.base64EncodedString(),
                     "format": audio.format
