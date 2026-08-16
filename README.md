@@ -4,13 +4,13 @@ SuperSamuel is a small native macOS dictation app:
 
 - Press `Option+Space` to start and stop recording.
 - Record locally as compact 16 kHz mono AAC audio.
-- With **Enhance** off, transcribe through OpenRouter with
-  `openai/whisper-large-v3`.
-- With **Enhance** on, send the audio directly to a configurable audio model,
-  defaulting to `openai/gpt-audio-mini`.
+- Send each recording through one configurable OpenRouter transcription model,
+  defaulting to `openai/gpt-transcribe`.
+- Give that model editable instructions for minimal cleanup, terminology,
+  names, languages, version numbers, and punctuation.
 - Paste the result back into the app that was active while dictating.
-- Optionally attach a screenshot as context. Visible text is extracted locally;
-  Gemini audio models can also receive the image itself.
+- Optionally attach a screenshot as context. Visible text is extracted locally
+  and added to the transcription instructions.
 
 There is no realtime websocket, token broker, or streaming transcript path.
 
@@ -61,26 +61,22 @@ swift build
 1. Open the `SS` menu-bar item.
 2. Choose **Settings…**
 3. Enter your OpenRouter API key. It is stored in the macOS Keychain.
-4. Choose a suggested enhancement model or enter another OpenRouter chat model
-   that accepts audio input.
+4. Optionally change the transcription model from `openai/gpt-transcribe`.
+5. Edit the transcription instructions to match your dictation style and
+   expected terminology.
 
-Examples:
-
-```text
-openai/gpt-audio-mini
-google/gemini-3.5-flash
-mistralai/voxtral-small-24b-2507
-```
-
-The transcription model is fixed to:
+The default transcription model is:
 
 ```text
-openai/whisper-large-v3
+openai/gpt-transcribe
 ```
 
-Enhancement is a single audio-model request: SuperSamuel does not run Whisper
-first. Requests ask OpenRouter to route to the provider with the highest
-advertised throughput.
+SuperSamuel sends the instructions through OpenRouter's provider-specific
+OpenAI `prompt` option. GPT Transcribe accepts free-form context and can use it
+for light cleanup and style guidance, but it remains a transcription model: the
+instructions do not alter the audio waveform, and large semantic rewrites are
+not guaranteed. Screenshot text is extracted locally and appended as additional
+disambiguation context without adding a second model request.
 
 ## Headless dictation benchmark
 
@@ -161,9 +157,9 @@ SuperSamuel may request:
 
 ```text
 record durable M4A audio
-  ├─ Enhance off → OpenRouter Whisper Large V3
-  └─ Enhance on  → selected OpenRouter audio model
-                    + optional screenshot-derived context
+  → selected OpenRouter transcription model
+    + transcription instructions
+    + optional locally extracted screenshot text
   → clipboard
   → optional Command+V paste
 ```
@@ -188,11 +184,11 @@ Each recording has its own folder containing:
 
 - The durable M4A recording (legacy recovered sessions may contain several parts)
 - A JSON manifest
-- Cached raw and cleaned transcript parts
+- Cached transcript parts (legacy recordings may also contain cleaned parts)
 - The final transcript while processing completes
 - Optional screenshot context
 
-If transcription, enhancement, cancellation, or app shutdown interrupts processing,
+If transcription, cancellation, or app shutdown interrupts processing,
 the recording remains in this folder. On the next launch, SuperSamuel presents
 the oldest unsent recording and offers:
 
@@ -202,9 +198,9 @@ the oldest unsent recording and offers:
 
 The menu-bar **Unsent Recordings** submenu also supports sending, revealing the
 folder in Finder, or moving it to Trash after confirmation. The recording
-manifest includes the selected input device and the enhancement model chosen
-for that recording. New recordings remain blocked while unsent recordings
-exist.
+manifest includes the selected input device, transcription model, and
+instructions chosen for that recording. New recordings remain blocked while
+unsent recordings exist.
 
 If processing fails, completed parts remain cached and the original audio stays
 available for retry.
@@ -218,10 +214,11 @@ Successfully processed text is stored under:
 Every new transcript has its own UUID-named folder containing:
 
 - The original durable M4A recording (or all parts from a recovered legacy session)
-- `transcript.txt` and the cached raw, cleaned, and final transcript artifacts
-- `metadata.json` with the workflow, requested models, configured prompt, audio
-  duration and size, input device, screenshot usage, timestamps, app version,
-  and macOS version
+- `transcript.txt` and cached transcription/final artifacts (legacy archives
+  may also contain cleaned transcript files)
+- `metadata.json` with the workflow, transcription model and instructions,
+  audio duration and size, input device, screenshot usage, timestamps, app
+  version, and macOS version
 - The original recording manifest and optional screenshot context
 
 The **Transcript History** submenu shows recent transcript previews. Each entry
@@ -233,17 +230,14 @@ also permanently deletes its archived recordings and metadata.
 ## Upload limits
 
 SuperSamuel sends audio through OpenRouter's base64 JSON request paths. Durable
-recordings remain compact 32 kbps M4A files (roughly 14 MB/hour). Whisper and
-Gemini receive M4A directly. GPT Audio Mini and the tested Voxtral chat model
-receive a temporary 16 kHz mono PCM WAV because their routed providers rejected
-M4A; the WAV is removed immediately after the request. Successful results are
-cached so a retry does not repeat completed work.
+recordings remain compact 32 kbps M4A files (roughly 14 MB/hour) and are sent
+directly to the transcription endpoint. Successful results are cached so a
+retry does not repeat completed work.
 
 Official references:
 
 - [OpenRouter speech-to-text](https://openrouter.ai/docs/guides/overview/multimodal/stt)
 - [OpenRouter transcription API usage](https://openrouter.ai/docs/guides/overview/multimodal/stt#api-usage)
-- [OpenRouter audio input](https://openrouter.ai/docs/guides/overview/multimodal/audio)
 
 ## Manual verification
 
@@ -252,10 +246,9 @@ Official references:
 - Cancel during transcription and confirm nothing is pasted.
 - Confirm the cancelled recording appears under **Unsent Recordings**.
 - Relaunch with an unsent recording and test Send, Keep, Reveal, and Delete.
-- Test enhancement with GPT Audio Mini, Gemini, and a custom audio model ID.
-- Test enhancement enabled and disabled.
+- Confirm transcription instructions affect filler removal and expected terms.
 - Test automatic paste in Notes, a browser textarea, and a code editor.
 - Test clipboard restoration.
-- Test screenshot context with GPT Audio Mini OCR text and Gemini image input.
+- Test screenshot context with locally extracted OCR text.
 - Quit during recording and confirm the saved recording appears after relaunch.
 - Confirm completed transcripts appear in **Transcript History**.

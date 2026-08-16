@@ -5,7 +5,6 @@ enum DictationPhase: Equatable {
     case idle
     case recording
     case transcribing
-    case enhancing
     case error(String)
 }
 
@@ -15,7 +14,6 @@ final class AppState: ObservableObject {
     @Published var elapsedSeconds: TimeInterval = 0
     @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
     @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
-    @Published var enhancementEnabled = true
     @Published var attachedScreenshot: AttachedScreenshot?
     @Published var screenshotStatusMessage: String?
     @Published var isCapturingScreenshot = false

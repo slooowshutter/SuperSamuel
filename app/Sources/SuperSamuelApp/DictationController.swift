@@ -193,7 +193,7 @@ final class DictationController {
             }
         case .recording:
             stopAndProcessRecording()
-        case .transcribing, .enhancing:
+        case .transcribing:
             cancelProcessing()
         }
     }
@@ -226,10 +226,10 @@ final class DictationController {
             try await permissions.ensureMicrophonePermission()
 
             clearAttachedScreenshot()
-            appState.enhancementEnabled = settings.enhancementEnabledByDefault
 
             let session = try recordingStore.createSession(
-                cleanup: currentEnhancementOptions()
+                transcriptionModel: settings.transcriptionModel,
+                transcriptionContext: settings.transcriptionContext
             )
             let chunkURL = try recordingStore.beginChunk(in: session.id)
 
@@ -273,7 +273,8 @@ final class DictationController {
             try finishCurrentChunk(sessionID: sessionID)
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                cleanup: currentEnhancementOptions(),
+                transcriptionModel: settings.transcriptionModel,
+                transcriptionContext: settings.transcriptionContext,
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
         } catch {
@@ -334,7 +335,8 @@ final class DictationController {
         do {
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                cleanup: currentEnhancementOptions(),
+                transcriptionModel: settings.transcriptionModel,
+                transcriptionContext: settings.transcriptionContext,
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
             try recordingStore.markFailed(sessionID, message: message)
@@ -437,25 +439,14 @@ final class DictationController {
     private func showProcessingProgress(
         _ progress: RecordingProcessingProgress
     ) {
-        let phase: DictationPhase
-        let action: String
-        switch progress.stage {
-        case .transcribing:
-            phase = .transcribing
-            action = "Transcribing"
-        case .enhancing:
-            phase = .enhancing
-            action = "Enhancing"
-        }
-
-        appState.setPhase(phase)
+        appState.setPhase(.transcribing)
         appState.setProgressMessage(
-            "\(action) part \(progress.currentPart) of \(progress.totalParts)..."
+            "Transcribing part \(progress.currentPart) of \(progress.totalParts)..."
         )
         if !progress.transcriptPreview.isEmpty {
             appState.setTranscriptPreview(fullText: progress.transcriptPreview)
         }
-        menuBarController?.updateStatusTitle(for: phase)
+        menuBarController?.updateStatusTitle(for: .transcribing)
     }
 
     private func completeOperation(
@@ -531,6 +522,17 @@ final class DictationController {
 
         errorResetTask?.cancel()
         resetToIdle()
+        do {
+            try recordingStore.prepareForProcessing(
+                sessionID: sessionID,
+                transcriptionModel: settings.transcriptionModel,
+                transcriptionContext: settings.transcriptionContext,
+                screenshotSourceURL: nil
+            )
+        } catch {
+            showError(error.localizedDescription)
+            return
+        }
         processSavedRecording(
             sessionID,
             delivery: DeliveryOptions(
@@ -741,15 +743,6 @@ final class DictationController {
             return true
         }
         return false
-    }
-
-    private func currentEnhancementOptions() -> PersistedCleanupOptions {
-        PersistedCleanupOptions(
-            isEnabled: appState.enhancementEnabled,
-            model: settings.enhancementModel,
-            prompt: settings.enhancementPrompt,
-            mode: .audioEnhancement
-        )
     }
 
     private func resetToIdle() {

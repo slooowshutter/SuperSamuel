@@ -10,6 +10,9 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     func testTranscriptionUsesBase64JSONRequest() async throws {
+        let selectedModel = "openai/gpt-transcribe"
+        let transcriptionContext =
+            "Software dictation. Expected term: SuperSamuel."
         let audioData = Data("wave-audio".utf8)
         let fileURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("\(UUID().uuidString).wav")
@@ -29,9 +32,24 @@ final class OpenRouterServiceTests: XCTestCase {
             )
             XCTAssertEqual(
                 payload["model"] as? String,
-                OpenRouterService.transcriptionModel
+                selectedModel
             )
             XCTAssertEqual(payload["temperature"] as? Int, 0)
+            XCTAssertNil(payload["prompt"])
+
+            let provider = try XCTUnwrap(
+                payload["provider"] as? [String: Any]
+            )
+            let options = try XCTUnwrap(
+                provider["options"] as? [String: Any]
+            )
+            let openAI = try XCTUnwrap(
+                options["openai"] as? [String: Any]
+            )
+            XCTAssertEqual(
+                openAI["prompt"] as? String,
+                transcriptionContext
+            )
 
             let inputAudio = try XCTUnwrap(
                 payload["input_audio"] as? [String: Any]
@@ -61,6 +79,8 @@ final class OpenRouterServiceTests: XCTestCase {
 
         let transcript = try await service.transcribe(
             apiKey: "test-key",
+            model: selectedModel,
+            transcriptionContext: transcriptionContext,
             audio: RecordedAudio(
                 fileURL: fileURL,
                 format: "wav",
@@ -346,7 +366,7 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testAudioEnhancementBypassesWhisperAndConvertsM4AToWAV() async throws {
+    func testProcessorUsesSingleTranscriptionRequest() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -354,12 +374,8 @@ final class OpenRouterServiceTests: XCTestCase {
         let recordingStore = RecordingStore(rootDirectory: root)
         let historyStore = TranscriptHistoryStore(rootDirectory: root)
         let session = try recordingStore.createSession(
-            cleanup: PersistedCleanupOptions(
-                isEnabled: true,
-                model: OpenRouterService.defaultAudioEnhancementModel,
-                prompt: "Preserve meaning.",
-                mode: .audioEnhancement
-            )
+            transcriptionModel: "openai/gpt-transcribe",
+            transcriptionContext: "Remove filler words. Preserve version numbers."
         )
         _ = try addAudibleChunk(
             to: recordingStore,
@@ -383,20 +399,29 @@ final class OpenRouterServiceTests: XCTestCase {
             XCTAssertEqual(requestCount.increment(), 1)
             XCTAssertEqual(
                 request.url?.absoluteString,
-                "https://openrouter.ai/api/v1/chat/completions"
+                "https://openrouter.ai/api/v1/audio/transcriptions"
             )
             let body = try XCTUnwrap(try requestBody(request))
             let payload = try XCTUnwrap(
                 JSONSerialization.jsonObject(with: body) as? [String: Any]
             )
-            let content = try userContent(from: payload)
             let inputAudio = try XCTUnwrap(
-                content.last?["input_audio"] as? [String: Any]
+                payload["input_audio"] as? [String: Any]
             )
-            XCTAssertEqual(inputAudio["format"] as? String, "wav")
-            let encoded = try XCTUnwrap(inputAudio["data"] as? String)
-            let converted = try XCTUnwrap(Data(base64Encoded: encoded))
-            XCTAssertEqual(String(data: converted.prefix(4), encoding: .ascii), "RIFF")
+            XCTAssertEqual(inputAudio["format"] as? String, "m4a")
+            let provider = try XCTUnwrap(
+                payload["provider"] as? [String: Any]
+            )
+            let options = try XCTUnwrap(
+                provider["options"] as? [String: Any]
+            )
+            let openAI = try XCTUnwrap(
+                options["openai"] as? [String: Any]
+            )
+            XCTAssertEqual(
+                openAI["prompt"] as? String,
+                "Remove filler words. Preserve version numbers."
+            )
 
             let response = try XCTUnwrap(
                 HTTPURLResponse(
@@ -408,7 +433,7 @@ final class OpenRouterServiceTests: XCTestCase {
             )
             return (
                 response,
-                Data(#"{"choices":[{"message":{"content":"Direct enhanced result"}}]}"#.utf8)
+                Data(#"{"text":"One-pass result"}"#.utf8)
             )
         }
 
@@ -418,7 +443,7 @@ final class OpenRouterServiceTests: XCTestCase {
             onProgress: { _ in }
         )
 
-        XCTAssertEqual(result.transcript, "Direct enhanced result")
+        XCTAssertEqual(result.transcript, "One-pass result")
         XCTAssertEqual(requestCount.value, 1)
     }
 
@@ -430,13 +455,7 @@ final class OpenRouterServiceTests: XCTestCase {
 
         let recordingStore = RecordingStore(rootDirectory: root)
         let historyStore = TranscriptHistoryStore(rootDirectory: root)
-        let session = try recordingStore.createSession(
-            cleanup: PersistedCleanupOptions(
-                isEnabled: false,
-                model: "",
-                prompt: ""
-            )
-        )
+        let session = try recordingStore.createSession()
         let firstChunk = try addAudibleChunk(
             to: recordingStore,
             sessionID: session.id,
@@ -548,7 +567,7 @@ final class OpenRouterServiceTests: XCTestCase {
         )
         XCTAssertEqual(
             try historyStore.metadata(id: session.id)?.workflow.workflow,
-            .whisperOnly
+            .transcriptionOnly
         )
     }
 
