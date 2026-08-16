@@ -30,7 +30,7 @@ final class SettingsWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 720),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 620),
             styleMask: [
                 .titled,
                 .closable,
@@ -60,33 +60,13 @@ private struct SettingsView: View {
 
     @State private var openRouterAPIKey: String
     @State private var transcriptionModel: String
-    @State private var enhancementModel: String
-    @State private var enhancementPrompt: String
-    @State private var enhancementEnabledByDefault: Bool
-
-    private static let customModelSelection = "__custom__"
-    private static let suggestedModels = [
-        EnhancementModelPreset(
-            id: "openai/gpt-audio-mini",
-            label: "GPT Audio Mini — Best quality"
-        ),
-        EnhancementModelPreset(
-            id: "mistralai/voxtral-small-24b-2507",
-            label: "Voxtral Small 24B — Balanced"
-        ),
-        EnhancementModelPreset(
-            id: "google/gemini-3.5-flash",
-            label: "Gemini 3.5 Flash — Fast"
-        )
-    ]
+    @State private var transcriptionContext: String
 
     init(settings: SettingsStore) {
         self.settings = settings
         _openRouterAPIKey = State(initialValue: settings.openRouterAPIKey)
         _transcriptionModel = State(initialValue: settings.transcriptionModel)
-        _enhancementModel = State(initialValue: settings.enhancementModel)
-        _enhancementPrompt = State(initialValue: settings.enhancementPrompt)
-        _enhancementEnabledByDefault = State(initialValue: settings.enhancementEnabledByDefault)
+        _transcriptionContext = State(initialValue: settings.transcriptionContext)
     }
 
     @ViewBuilder
@@ -112,7 +92,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "OpenRouter",
-                    description: "The same API key is used for fast Whisper transcription and optional audio enhancement."
+                    description: "Your API key is used for the single transcription request."
                 ) {
                     SecureField("sk-or-v1-...", text: apiKeyBinding)
                         .textFieldStyle(.plain)
@@ -128,7 +108,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "Transcription",
-                    description: "With Enhance off, recordings use the fast, literal transcription path."
+                    description: "One model listens to the recording and returns ready-to-paste text."
                 ) {
                     TextField(
                         OpenRouterService.transcriptionModel,
@@ -143,70 +123,39 @@ private struct SettingsView: View {
                     Text("Enter any OpenRouter model supported by the audio transcription endpoint. Clear the field to restore the default.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                }
-
-                section(
-                    title: "Audio Enhancement",
-                    description: "With Enhance on, the selected audio model listens directly to the recording and returns clean, ready-to-paste text. Whisper is not run first."
-                ) {
-                    Toggle(
-                        "Enable enhancement by default",
-                        isOn: enhancementEnabledByDefaultBinding
-                    )
-
-                    VStack(alignment: .leading, spacing: 8) {
-                        Text("Audio model")
-                            .font(.system(size: 13, weight: .semibold))
-
-                        Picker("Suggested model", selection: enhancementPresetBinding) {
-                            ForEach(Self.suggestedModels) { preset in
-                                Text(preset.label).tag(preset.id)
-                            }
-                            Divider()
-                            Text("Custom OpenRouter model…")
-                                .tag(Self.customModelSelection)
-                        }
-                        .pickerStyle(.menu)
-
-                        Text("Choose a suggestion or enter any OpenRouter chat model that accepts audio input.")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-
-                        TextField("openai/gpt-audio-mini", text: enhancementModelBinding)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 12, design: .monospaced))
-                            .padding(.horizontal, 11)
-                            .padding(.vertical, 9)
-                            .liquidGlassSurface(cornerRadius: 11)
-
-                        Text("Screenshot text is extracted locally for every model. Gemini models also receive the screenshot image.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
 
                     VStack(alignment: .leading, spacing: 8) {
                         HStack {
-                            Text("Enhancement instructions")
+                            Text("Transcription instructions")
                                 .font(.system(size: 13, weight: .semibold))
 
                             Spacer()
 
                             Button("Restore Default") {
-                                enhancementPrompt = OpenRouterService.defaultCleanupInstruction
-                                settings.enhancementPrompt = OpenRouterService.defaultCleanupInstruction
+                                transcriptionContext =
+                                    OpenRouterService.defaultTranscriptionInstruction
+                                settings.transcriptionContext =
+                                    OpenRouterService.defaultTranscriptionInstruction
                             }
                             .liquidGlassButton(
                                 tint: Color.accentColor.opacity(0.78)
                             )
-                            .disabled(enhancementPrompt == OpenRouterService.defaultCleanupInstruction)
+                            .disabled(
+                                transcriptionContext ==
+                                    OpenRouterService.defaultTranscriptionInstruction
+                            )
                         }
 
-                        TextEditor(text: enhancementPromptBinding)
+                        TextEditor(text: transcriptionContextBinding)
                             .font(.system(size: 13))
                             .scrollContentBackground(.hidden)
                             .padding(8)
-                            .frame(minHeight: 170)
+                            .frame(minHeight: 220)
                             .liquidGlassSurface(cornerRadius: 12)
+
+                        Text("Sent with the audio as GPT Transcribe's free-form context. Use it for minimal cleanup, expected names, technical terms, version numbers, languages, and punctuation style.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                     }
                 }
             }
@@ -215,7 +164,7 @@ private struct SettingsView: View {
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 680, minHeight: 720)
+        .frame(minWidth: 680, minHeight: 620)
     }
 
     private var apiKeyBinding: Binding<String> {
@@ -224,16 +173,6 @@ private struct SettingsView: View {
             set: { value in
                 openRouterAPIKey = value
                 settings.openRouterAPIKey = value
-            }
-        )
-    }
-
-    private var enhancementModelBinding: Binding<String> {
-        Binding(
-            get: { enhancementModel },
-            set: { value in
-                enhancementModel = value
-                settings.enhancementModel = value
             }
         )
     }
@@ -248,39 +187,12 @@ private struct SettingsView: View {
         )
     }
 
-    private var enhancementPromptBinding: Binding<String> {
+    private var transcriptionContextBinding: Binding<String> {
         Binding(
-            get: { enhancementPrompt },
+            get: { transcriptionContext },
             set: { value in
-                enhancementPrompt = value
-                settings.enhancementPrompt = value
-            }
-        )
-    }
-
-    private var enhancementEnabledByDefaultBinding: Binding<Bool> {
-        Binding(
-            get: { enhancementEnabledByDefault },
-            set: { value in
-                enhancementEnabledByDefault = value
-                settings.enhancementEnabledByDefault = value
-            }
-        )
-    }
-
-    private var enhancementPresetBinding: Binding<String> {
-        Binding(
-            get: {
-                Self.suggestedModels.contains { $0.id == enhancementModel }
-                    ? enhancementModel
-                    : Self.customModelSelection
-            },
-            set: { selection in
-                guard selection != Self.customModelSelection else {
-                    return
-                }
-                enhancementModel = selection
-                settings.enhancementModel = selection
+                transcriptionContext = value
+                settings.transcriptionContext = value
             }
         )
     }
@@ -305,9 +217,4 @@ private struct SettingsView: View {
         .liquidGlassSurface(cornerRadius: 18)
     }
 
-}
-
-private struct EnhancementModelPreset: Identifiable {
-    let id: String
-    let label: String
 }

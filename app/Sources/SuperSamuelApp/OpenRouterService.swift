@@ -21,12 +21,13 @@ enum OpenRouterServiceError: LocalizedError {
 }
 
 actor OpenRouterService: DictationTransport {
-    static let transcriptionModel = "openai/whisper-large-v3"
+    static let transcriptionModel = "openai/gpt-transcribe"
     static let geminiDictationModel = "google/gemini-3.5-flash"
     static let defaultAudioEnhancementModel = "openai/gpt-audio-mini"
     static let defaultCleanupModel = "openai/gpt-5.4-nano"
-    static let defaultCleanupInstruction =
-        "Rewrite the raw transcript into clean written dictation while preserving all meaning and technical details. Remove filler words such as um, uh, like when used as filler, you know, repeated words, false starts, self-corrections, stutters, and speech artifacts. Keep the same intent, facts, uncertainty, and level of detail. Do not summarize, shorten for brevity, add new facts, or change any meaning. Return only the cleaned transcript."
+    static let defaultTranscriptionInstruction =
+        "Transcribe the audio into clean written dictation while preserving all meaning and technical details. Remove filler words such as um, uh, like when used as filler, you know, repeated words, false starts, self-corrections, stutters, and speech artifacts. Keep the same intent, facts, uncertainty, and level of detail. Do not summarize, shorten for brevity, add new facts, or change any meaning. Return only the cleaned transcript."
+    static let defaultCleanupInstruction = defaultTranscriptionInstruction
 
     private let transcriptionURL = URL(string: "https://openrouter.ai/api/v1/audio/transcriptions")!
     private let chatURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
@@ -39,11 +40,13 @@ actor OpenRouterService: DictationTransport {
     func transcribe(
         apiKey: String,
         model: String = OpenRouterService.transcriptionModel,
+        transcriptionContext: String? = nil,
         audio: RecordedAudio
     ) async throws -> String {
         try await performTranscription(
             apiKey: apiKey,
             model: model,
+            transcriptionContext: transcriptionContext,
             audio: audio
         ).text
     }
@@ -55,6 +58,7 @@ actor OpenRouterService: DictationTransport {
         try await performTranscription(
             apiKey: apiKey,
             model: Self.transcriptionModel,
+            transcriptionContext: nil,
             audio: audio
         )
     }
@@ -62,6 +66,7 @@ actor OpenRouterService: DictationTransport {
     func performTranscription(
         apiKey: String,
         model: String,
+        transcriptionContext: String? = nil,
         audio: RecordedAudio
     ) async throws -> OpenRouterTextResponse {
         let apiKey = try validatedAPIKey(apiKey)
@@ -76,15 +81,25 @@ actor OpenRouterService: DictationTransport {
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 120
-        request.httpBody = try JSONSerialization.data(
-            withJSONObject: [
-                "model": selectedModel,
-                "input_audio": [
-                    "data": audioData.base64EncodedString(),
-                    "format": audio.format
-                ],
-                "temperature": 0
+        var payload: [String: Any] = [
+            "model": selectedModel,
+            "input_audio": [
+                "data": audioData.base64EncodedString(),
+                "format": audio.format
             ],
+            "temperature": 0
+        ]
+        let context = transcriptionContext?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !context.isEmpty {
+            payload["provider"] = [
+                "options": [
+                    "openai": ["prompt": context]
+                ]
+            ]
+        }
+        request.httpBody = try JSONSerialization.data(
+            withJSONObject: payload,
             options: []
         )
 

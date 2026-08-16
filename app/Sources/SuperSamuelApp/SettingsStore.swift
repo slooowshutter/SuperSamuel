@@ -8,9 +8,8 @@ final class SettingsStore {
         static let restoreClipboard = "restoreClipboard"
         static let legacyOpenRouterAPIKey = "openRouterAPIKey"
         static let transcriptionModel = "openRouterTranscriptionModel"
-        static let enhancementModel = "openRouterAudioEnhancementModel"
-        static let enhancementPrompt = "openRouterCleanupPrompt"
-        static let enhancementEnabledByDefault = "aiCleanupEnabledByDefault"
+        static let transcriptionContext = "openRouterTranscriptionContext"
+        static let legacyCleanupPrompt = "openRouterCleanupPrompt"
     }
 
     private let defaults: UserDefaults
@@ -22,6 +21,7 @@ final class SettingsStore {
     ) {
         self.defaults = defaults
         self.credentials = credentials
+        migrateLegacyCleanupPrompt()
         registerDefaults()
         migrateLegacyAPIKey()
     }
@@ -47,21 +47,6 @@ final class SettingsStore {
         }
     }
 
-    var enhancementModel: String {
-        get {
-            let value = defaults.string(forKey: Keys.enhancementModel)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            return value.isEmpty ? OpenRouterService.defaultAudioEnhancementModel : value
-        }
-        set {
-            let value = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            defaults.set(
-                value.isEmpty ? OpenRouterService.defaultAudioEnhancementModel : value,
-                forKey: Keys.enhancementModel
-            )
-        }
-    }
-
     var transcriptionModel: String {
         get {
             let value = defaults.string(forKey: Keys.transcriptionModel)?
@@ -77,25 +62,16 @@ final class SettingsStore {
         }
     }
 
-    var enhancementPrompt: String {
+    var transcriptionContext: String {
         get {
-            defaults.string(forKey: Keys.enhancementPrompt)
-                ?? OpenRouterService.defaultCleanupInstruction
+            defaults.string(forKey: Keys.transcriptionContext)
+                ?? OpenRouterService.defaultTranscriptionInstruction
         }
-        set { defaults.set(newValue, forKey: Keys.enhancementPrompt) }
-    }
-
-    var enhancementEnabledByDefault: Bool {
-        get { defaults.bool(forKey: Keys.enhancementEnabledByDefault) }
-        set { defaults.set(newValue, forKey: Keys.enhancementEnabledByDefault) }
+        set { defaults.set(newValue, forKey: Keys.transcriptionContext) }
     }
 
     var hasOpenRouterAPIKey: Bool {
         !openRouterAPIKey.isEmpty
-    }
-
-    var hasEnhancementConfiguration: Bool {
-        hasOpenRouterAPIKey && !enhancementModel.isEmpty
     }
 
     private func registerDefaults() {
@@ -103,10 +79,23 @@ final class SettingsStore {
             Keys.autoPaste: true,
             Keys.restoreClipboard: true,
             Keys.transcriptionModel: OpenRouterService.transcriptionModel,
-            Keys.enhancementModel: OpenRouterService.defaultAudioEnhancementModel,
-            Keys.enhancementPrompt: OpenRouterService.defaultCleanupInstruction,
-            Keys.enhancementEnabledByDefault: true
+            Keys.transcriptionContext: OpenRouterService.defaultTranscriptionInstruction
         ])
+    }
+
+    private func migrateLegacyCleanupPrompt() {
+        guard defaults.object(forKey: Keys.transcriptionContext) == nil,
+              let legacyPrompt = defaults.string(
+                forKey: Keys.legacyCleanupPrompt
+              ),
+              !legacyPrompt.trimmingCharacters(
+                in: .whitespacesAndNewlines
+              ).isEmpty
+        else {
+            return
+        }
+
+        defaults.set(legacyPrompt, forKey: Keys.transcriptionContext)
     }
 
     private func migrateLegacyAPIKey() {

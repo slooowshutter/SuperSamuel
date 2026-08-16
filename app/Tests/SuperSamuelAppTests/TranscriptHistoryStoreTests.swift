@@ -4,6 +4,36 @@ import XCTest
 
 @MainActor
 final class TranscriptHistoryStoreTests: XCTestCase {
+    func testArchiveRecordsTranscriptionContext() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let recordingStore = RecordingStore(rootDirectory: root)
+        let historyStore = TranscriptHistoryStore(rootDirectory: root)
+        let session = try recordingStore.createSession(
+            transcriptionModel: "openai/gpt-transcribe",
+            transcriptionContext: "Expected term: SuperSamuel."
+        )
+
+        _ = try historyStore.archive(
+            session: session,
+            recordingDirectory: recordingStore.directoryURL(for: session.id),
+            text: "SuperSamuel"
+        )
+        let metadata = try XCTUnwrap(historyStore.metadata(id: session.id))
+
+        XCTAssertEqual(metadata.workflow.workflow, .transcriptionOnly)
+        XCTAssertEqual(
+            metadata.workflow.transcriptionModel,
+            "openai/gpt-transcribe"
+        )
+        XCTAssertEqual(
+            metadata.workflow.transcriptionContext,
+            "Expected term: SuperSamuel."
+        )
+    }
+
     func testArchiveKeepsAudioTranscriptsAndProvenanceTogether() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -12,12 +42,8 @@ final class TranscriptHistoryStoreTests: XCTestCase {
         let recordingStore = RecordingStore(rootDirectory: root)
         let historyStore = TranscriptHistoryStore(rootDirectory: root)
         let original = try recordingStore.createSession(
-            cleanup: PersistedCleanupOptions(
-                isEnabled: true,
-                model: "openai/gpt-audio-mini",
-                prompt: "Preserve product names exactly.",
-                mode: .audioEnhancement
-            )
+            transcriptionModel: "openai/gpt-transcribe",
+            transcriptionContext: "Preserve product names exactly."
         )
         let audioURL = try recordingStore.beginChunk(in: original.id)
         try Data([0, 1, 2, 3]).write(to: audioURL)
@@ -73,14 +99,13 @@ final class TranscriptHistoryStoreTests: XCTestCase {
         XCTAssertEqual(archivedSession.status, .completed)
         XCTAssertEqual(archivedSession.completedTranscriptID, session.id)
         XCTAssertEqual(metadata.schemaVersion, 1)
-        XCTAssertEqual(metadata.workflow.workflow, .audioLLMOnly)
-        XCTAssertNil(metadata.workflow.transcriptionModel)
+        XCTAssertEqual(metadata.workflow.workflow, .transcriptionOnly)
         XCTAssertEqual(
-            metadata.workflow.enhancementModel,
-            "openai/gpt-audio-mini"
+            metadata.workflow.transcriptionModel,
+            "openai/gpt-transcribe"
         )
         XCTAssertEqual(
-            metadata.workflow.configuredPrompt,
+            metadata.workflow.transcriptionContext,
             "Preserve product names exactly."
         )
         XCTAssertEqual(metadata.inputDevice?.name, "Test Microphone")

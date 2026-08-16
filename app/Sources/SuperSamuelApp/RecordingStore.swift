@@ -1,22 +1,5 @@
 import Foundation
 
-struct PersistedCleanupOptions: Codable {
-    enum Mode: String, Codable {
-        case audioEnhancement
-    }
-
-    var isEnabled: Bool
-    var model: String
-    var prompt: String
-    // Old pending recordings do not have this field and keep using the legacy
-    // Whisper-then-text-cleanup pipeline when retried.
-    var mode: Mode? = nil
-
-    var usesAudioEnhancement: Bool {
-        mode == .audioEnhancement
-    }
-}
-
 // ponytail: a session still holds an array of chunks. New recordings always
 // write exactly one, but pending recordings already on disk may have several,
 // and looping over N covers both without a migration.
@@ -42,10 +25,12 @@ struct RecordingSession: Codable, Identifiable {
     var updatedAt: Date
     var status: Status
     var chunks: [RecordingChunk]
-    var cleanup: PersistedCleanupOptions
     // Optional so manifests created before transcription models were
     // configurable continue to decode and use the original default.
     var transcriptionModel: String?
+    // Optional so older manifests continue to decode. Keeping the context on
+    // the session also makes retries reproduce the original request.
+    var transcriptionContext: String?
     var screenshotFilename: String?
     var lastError: String?
     var completedTranscriptID: UUID?
@@ -55,6 +40,12 @@ struct RecordingSession: Codable, Identifiable {
         let model = transcriptionModel?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return model.isEmpty ? OpenRouterService.transcriptionModel : model
+    }
+
+    var resolvedTranscriptionContext: String? {
+        let context = transcriptionContext?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return context.isEmpty ? nil : context
     }
 }
 
@@ -116,8 +107,8 @@ final class RecordingStore {
     }
 
     func createSession(
-        cleanup: PersistedCleanupOptions,
-        transcriptionModel: String = OpenRouterService.transcriptionModel
+        transcriptionModel: String = OpenRouterService.transcriptionModel,
+        transcriptionContext: String = ""
     ) throws -> RecordingSession {
         try ensureDirectories()
 
@@ -128,8 +119,10 @@ final class RecordingStore {
             updatedAt: now,
             status: .recording,
             chunks: [],
-            cleanup: cleanup,
             transcriptionModel: transcriptionModel,
+            transcriptionContext: normalizedTranscriptionContext(
+                transcriptionContext
+            ),
             screenshotFilename: nil,
             lastError: nil,
             completedTranscriptID: nil,
@@ -189,13 +182,15 @@ final class RecordingStore {
 
     func prepareForProcessing(
         sessionID: UUID,
-        cleanup: PersistedCleanupOptions,
         transcriptionModel: String = OpenRouterService.transcriptionModel,
+        transcriptionContext: String = "",
         screenshotSourceURL: URL?
     ) throws {
         var session = try load(sessionID)
-        session.cleanup = cleanup
         session.transcriptionModel = transcriptionModel
+        session.transcriptionContext = normalizedTranscriptionContext(
+            transcriptionContext
+        )
         session.status = .ready
         session.updatedAt = Date()
         session.lastError = nil
@@ -567,12 +562,8 @@ final class RecordingStore {
             updatedAt: Date(),
             status: .failed,
             chunks: chunks,
-            cleanup: PersistedCleanupOptions(
-                isEnabled: true,
-                model: OpenRouterService.defaultCleanupModel,
-                prompt: OpenRouterService.defaultCleanupInstruction
-            ),
             transcriptionModel: OpenRouterService.transcriptionModel,
+            transcriptionContext: nil,
             screenshotFilename: nil,
             lastError: "Recovered audio whose metadata could not be read.",
             completedTranscriptID: nil,
@@ -580,6 +571,11 @@ final class RecordingStore {
         )
         try save(session)
         return session
+    }
+
+    private func normalizedTranscriptionContext(_ context: String) -> String? {
+        let normalized = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
     }
 
     private func directory(for sessionID: UUID) -> URL {

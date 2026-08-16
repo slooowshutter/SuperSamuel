@@ -4,18 +4,26 @@ import XCTest
 
 @MainActor
 final class RecordingStoreTests: XCTestCase {
-    func testLegacyCleanupOptionsDecodeWithoutEnhancementMode() throws {
-        let data = Data(
-            #"{"isEnabled":true,"model":"legacy/text-model","prompt":"Clean it"}"#.utf8
+    func testTranscriptionConfigurationPersistsWithSession() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let store = RecordingStore(rootDirectory: root)
+        let session = try store.createSession(
+            transcriptionModel: "openai/gpt-transcribe",
+            transcriptionContext: "  Expected term: SuperSamuel.  "
         )
 
-        let options = try JSONDecoder().decode(
-            PersistedCleanupOptions.self,
-            from: data
+        let reloaded = try store.load(session.id)
+        XCTAssertEqual(
+            reloaded.resolvedTranscriptionModel,
+            "openai/gpt-transcribe"
         )
-
-        XCTAssertFalse(options.usesAudioEnhancement)
-        XCTAssertNil(options.mode)
+        XCTAssertEqual(
+            reloaded.resolvedTranscriptionContext,
+            "Expected term: SuperSamuel."
+        )
     }
 
     /// Records a session end to end the way the app does — begin, write AAC,
@@ -27,13 +35,7 @@ final class RecordingStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = RecordingStore(rootDirectory: root)
-        let session = try store.createSession(
-            cleanup: PersistedCleanupOptions(
-                isEnabled: false,
-                model: "",
-                prompt: ""
-            )
-        )
+        let session = try store.createSession()
 
         let fileURL = try store.beginChunk(in: session.id)
         XCTAssertEqual(fileURL.pathExtension, "m4a")
@@ -54,13 +56,7 @@ final class RecordingStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: root) }
 
         let store = RecordingStore(rootDirectory: root)
-        let session = try store.createSession(
-            cleanup: PersistedCleanupOptions(
-                isEnabled: false,
-                model: "",
-                prompt: ""
-            )
-        )
+        let session = try store.createSession()
         _ = try store.beginChunk(in: session.id)
 
         XCTAssertThrowsError(

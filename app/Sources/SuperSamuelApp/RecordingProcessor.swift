@@ -1,12 +1,6 @@
 import Foundation
 
 struct RecordingProcessingProgress {
-    enum Stage {
-        case transcribing
-        case enhancing
-    }
-
-    let stage: Stage
     let currentPart: Int
     let totalParts: Int
     let transcriptPreview: String
@@ -45,7 +39,7 @@ final class RecordingProcessor {
         ) {
             finalTranscript = cachedFinal
         } else {
-            finalTranscript = try await transcribeAndClean(
+            finalTranscript = try await transcribe(
                 session: session,
                 apiKey: apiKey,
                 onProgress: onProgress
@@ -71,33 +65,13 @@ final class RecordingProcessor {
         return ProcessedRecording(transcript: finalTranscript)
     }
 
-    private func transcribeAndClean(
-        session: RecordingSession,
-        apiKey: String,
-        onProgress: (RecordingProcessingProgress) -> Void
-    ) async throws -> String {
-        if session.cleanup.isEnabled && session.cleanup.usesAudioEnhancement {
-            return try await enhanceAudio(
-                session: session,
-                apiKey: apiKey,
-                onProgress: onProgress
-            )
-        }
-
-        return try await transcribeAndOptionallyCleanLegacy(
-            session: session,
-            apiKey: apiKey,
-            onProgress: onProgress
-        )
-    }
-
-    private func transcribeAndOptionallyCleanLegacy(
+    private func transcribe(
         session: RecordingSession,
         apiKey: String,
         onProgress: (RecordingProcessingProgress) -> Void
     ) async throws -> String {
         let chunks = try recordingStore.audioChunks(for: session)
-        let screenshotURL = recordingStore.screenshotURL(for: session)
+        let context = await transcriptionContext(for: session)
         var transcriptParts: [String] = []
 
         for (index, item) in chunks.enumerated() {
@@ -106,7 +80,6 @@ final class RecordingProcessor {
             let partNumber = index + 1
             onProgress(
                 RecordingProcessingProgress(
-                    stage: .transcribing,
                     currentPart: partNumber,
                     totalParts: chunks.count,
                     transcriptPreview: transcriptParts.joined(separator: "\n\n")
@@ -130,6 +103,7 @@ final class RecordingProcessor {
                     let transcript = try await openRouterService.transcribe(
                         apiKey: apiKey,
                         model: session.resolvedTranscriptionModel,
+                        transcriptionContext: context,
                         audio: item.1
                     )
                     try recordingStore.saveTranscript(
@@ -151,7 +125,6 @@ final class RecordingProcessor {
             guard let rawTranscript else {
                 onProgress(
                     RecordingProcessingProgress(
-                        stage: .transcribing,
                         currentPart: partNumber,
                         totalParts: chunks.count,
                         transcriptPreview: transcriptParts.joined(separator: "\n\n")
@@ -160,45 +133,9 @@ final class RecordingProcessor {
                 continue
             }
 
-            let transcriptPart: String
-            if session.cleanup.isEnabled {
-                onProgress(
-                    RecordingProcessingProgress(
-                        stage: .enhancing,
-                        currentPart: partNumber,
-                        totalParts: chunks.count,
-                        transcriptPreview: transcriptParts.joined(separator: "\n\n")
-                    )
-                )
-
-                if let cached = recordingStore.cachedTranscript(
-                    sessionID: session.id,
-                    chunkID: item.0.id,
-                    cleaned: true
-                ) {
-                    transcriptPart = cached
-                } else {
-                    transcriptPart = try await cleanupTranscript(
-                        rawTranscript,
-                        cleanup: session.cleanup,
-                        screenshotURL: screenshotURL,
-                        apiKey: apiKey
-                    )
-                    try recordingStore.saveTranscript(
-                        transcriptPart,
-                        sessionID: session.id,
-                        chunkID: item.0.id,
-                        cleaned: true
-                    )
-                }
-            } else {
-                transcriptPart = rawTranscript
-            }
-
-            transcriptParts.append(transcriptPart)
+            transcriptParts.append(rawTranscript)
             onProgress(
                 RecordingProcessingProgress(
-                    stage: session.cleanup.isEnabled ? .enhancing : .transcribing,
                     currentPart: partNumber,
                     totalParts: chunks.count,
                     transcriptPreview: transcriptParts.joined(separator: "\n\n")
@@ -215,168 +152,22 @@ final class RecordingProcessor {
         return finalTranscript
     }
 
-    private func enhanceAudio(
-        session: RecordingSession,
-        apiKey: String,
-        onProgress: (RecordingProcessingProgress) -> Void
-    ) async throws -> String {
-        let chunks = try recordingStore.audioChunks(for: session)
+    private func transcriptionContext(for session: RecordingSession) async -> String? {
+        var contextParts: [String] = []
+        if let configuredContext = session.resolvedTranscriptionContext {
+            contextParts.append(configuredContext)
+        }
+
         let screenshotURL = recordingStore.screenshotURL(for: session)
-        let visibleText = await ScreenshotContextExtractor.extractText(
+        if let visibleText = await ScreenshotContextExtractor.extractText(
             from: screenshotURL
-        )
-        let supportingContext = visibleText.map {
-            "Visible text extracted locally from the attached app screenshot:\n\($0)"
-        }
-        var transcriptParts: [String] = []
-
-        for (index, item) in chunks.enumerated() {
-            try Task.checkCancellation()
-            let partNumber = index + 1
-
-            onProgress(
-                RecordingProcessingProgress(
-                    stage: .enhancing,
-                    currentPart: partNumber,
-                    totalParts: chunks.count,
-                    transcriptPreview: transcriptParts.joined(separator: "\n\n")
-                )
-            )
-
-            if recordingStore.chunkHadNoSpeech(
-                sessionID: session.id,
-                chunkID: item.0.id
-            ) {
-                continue
-            }
-
-            let transcriptPart: String
-            if let cached = recordingStore.cachedTranscript(
-                sessionID: session.id,
-                chunkID: item.0.id,
-                cleaned: true
-            ) {
-                transcriptPart = cached
-            } else {
-                let preparedAudio = try await AudioModelInputPreparer.prepare(
-                    item.1,
-                    for: session.cleanup.model
-                )
-                defer { preparedAudio.removeTemporaryFile() }
-
-                do {
-                    transcriptPart = try await enhanceAudioPart(
-                        preparedAudio.audio,
-                        cleanup: session.cleanup,
-                        supportingContext: supportingContext,
-                        screenshotURL: screenshotURL,
-                        apiKey: apiKey
-                    )
-                } catch OpenRouterServiceError.noSpeechDetected {
-                    try recordingStore.markChunkAsNoSpeech(
-                        sessionID: session.id,
-                        chunkID: item.0.id
-                    )
-                    continue
-                }
-
-                try recordingStore.saveTranscript(
-                    transcriptPart,
-                    sessionID: session.id,
-                    chunkID: item.0.id,
-                    cleaned: true
-                )
-            }
-
-            transcriptParts.append(transcriptPart)
-            onProgress(
-                RecordingProcessingProgress(
-                    stage: .enhancing,
-                    currentPart: partNumber,
-                    totalParts: chunks.count,
-                    transcriptPreview: transcriptParts.joined(separator: "\n\n")
-                )
+        ) {
+            contextParts.append(
+                "Visible text extracted locally from the attached app screenshot. Use it only to disambiguate words in the audio:\n\(visibleText)"
             )
         }
 
-        let finalTranscript = transcriptParts
-            .joined(separator: "\n\n")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !finalTranscript.isEmpty else {
-            throw OpenRouterServiceError.noSpeechDetected
-        }
-        return finalTranscript
-    }
-
-    private func enhanceAudioPart(
-        _ audio: RecordedAudio,
-        cleanup: PersistedCleanupOptions,
-        supportingContext: String?,
-        screenshotURL: URL?,
-        apiKey: String
-    ) async throws -> String {
-        do {
-            return try await openRouterService.performAudioDictation(
-                apiKey: apiKey,
-                model: cleanup.model,
-                audio: audio,
-                draftTranscript: nil,
-                rewriteInstruction: cleanup.prompt,
-                supportingContext: supportingContext,
-                screenshotURL: screenshotURL
-            ).text
-        } catch {
-            guard screenshotURL != nil,
-                  OpenRouterService.supportsNativeImageContext(model: cleanup.model),
-                  !isCancellation(error)
-            else {
-                throw error
-            }
-
-            return try await openRouterService.performAudioDictation(
-                apiKey: apiKey,
-                model: cleanup.model,
-                audio: audio,
-                draftTranscript: nil,
-                rewriteInstruction: cleanup.prompt,
-                supportingContext: supportingContext,
-                screenshotURL: nil
-            ).text
-        }
-    }
-
-    private func cleanupTranscript(
-        _ transcript: String,
-        cleanup: PersistedCleanupOptions,
-        screenshotURL: URL?,
-        apiKey: String
-    ) async throws -> String {
-        do {
-            return try await openRouterService.cleanupTranscript(
-                apiKey: apiKey,
-                model: cleanup.model,
-                rewriteInstruction: cleanup.prompt,
-                rawTranscript: transcript,
-                screenshotURL: screenshotURL
-            )
-        } catch {
-            guard screenshotURL != nil, !isCancellation(error) else {
-                throw error
-            }
-
-            return try await openRouterService.cleanupTranscript(
-                apiKey: apiKey,
-                model: cleanup.model,
-                rewriteInstruction: cleanup.prompt,
-                rawTranscript: transcript
-            )
-        }
-    }
-
-    private func isCancellation(_ error: Error) -> Bool {
-        if error is CancellationError {
-            return true
-        }
-        return (error as? URLError)?.code == .cancelled || Task.isCancelled
+        let context = contextParts.joined(separator: "\n\n")
+        return context.isEmpty ? nil : context
     }
 }

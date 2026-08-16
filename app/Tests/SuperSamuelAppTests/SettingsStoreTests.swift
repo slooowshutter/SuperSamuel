@@ -15,6 +15,8 @@ final class SettingsStoreTests: XCTestCase {
         )
 
         settings.transcriptionModel = "custom/transcription-model"
+        settings.transcriptionContext =
+            "Expected terms include SuperSamuel and OpenRouter."
 
         let reloadedSettings = SettingsStore(
             defaults: defaults,
@@ -24,9 +26,13 @@ final class SettingsStoreTests: XCTestCase {
             reloadedSettings.transcriptionModel,
             "custom/transcription-model"
         )
+        XCTAssertEqual(
+            reloadedSettings.transcriptionContext,
+            "Expected terms include SuperSamuel and OpenRouter."
+        )
     }
 
-    func testAudioEnhancementDefaultsToGPTAudioMini() {
+    func testTranscriptionDefaultsToGPTTranscribeWithInstructions() {
         let suiteName = "SuperSamuelTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
         defer { defaults.removePersistentDomain(forName: suiteName) }
@@ -37,9 +43,32 @@ final class SettingsStoreTests: XCTestCase {
         )
 
         XCTAssertEqual(
-            settings.enhancementModel,
-            OpenRouterService.defaultAudioEnhancementModel
+            settings.transcriptionModel,
+            "openai/gpt-transcribe"
         )
-        XCTAssertTrue(settings.enhancementEnabledByDefault)
+        XCTAssertEqual(
+            settings.transcriptionContext,
+            OpenRouterService.defaultTranscriptionInstruction
+        )
+    }
+
+    func testLegacyCleanupPromptBecomesTranscriptionInstructions() {
+        let suiteName = "SuperSamuelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        defaults.set(
+            "Preserve Gemini 3.6 exactly.",
+            forKey: "openRouterCleanupPrompt"
+        )
+
+        let settings = SettingsStore(
+            defaults: defaults,
+            credentials: CredentialStore(service: suiteName)
+        )
+
+        XCTAssertEqual(
+            settings.transcriptionContext,
+            "Preserve Gemini 3.6 exactly."
+        )
     }
 }

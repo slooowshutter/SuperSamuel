@@ -7,6 +7,8 @@ struct TranscriptHistoryItem: Codable, Identifiable {
 }
 
 enum TranscriptWorkflow: String, Codable, Equatable {
+    case transcriptionOnly = "transcription-only"
+    // Retained so metadata archived by older app versions still decodes.
     case whisperOnly = "whisper-only"
     case whisperThenTextLLM = "whisper-then-text-llm"
     case audioLLMOnly = "audio-llm-only"
@@ -15,8 +17,7 @@ enum TranscriptWorkflow: String, Codable, Equatable {
 struct TranscriptWorkflowMetadata: Codable {
     let workflow: TranscriptWorkflow
     let transcriptionModel: String?
-    let enhancementModel: String?
-    let configuredPrompt: String?
+    let transcriptionContext: String?
     let usedScreenshotContext: Bool
 }
 
@@ -265,28 +266,6 @@ final class TranscriptHistoryStore {
         text: String,
         completedAt: Date
     ) -> TranscriptHistoryMetadata {
-        let workflow: TranscriptWorkflow
-        let transcriptionModel: String?
-        let enhancementModel: String?
-        let configuredPrompt: String?
-
-        if session.cleanup.isEnabled && session.cleanup.usesAudioEnhancement {
-            workflow = .audioLLMOnly
-            transcriptionModel = nil
-            enhancementModel = resolvedEnhancementModel(for: session.cleanup)
-            configuredPrompt = session.cleanup.prompt
-        } else if session.cleanup.isEnabled {
-            workflow = .whisperThenTextLLM
-            transcriptionModel = session.resolvedTranscriptionModel
-            enhancementModel = resolvedEnhancementModel(for: session.cleanup)
-            configuredPrompt = session.cleanup.prompt
-        } else {
-            workflow = .whisperOnly
-            transcriptionModel = session.resolvedTranscriptionModel
-            enhancementModel = nil
-            configuredPrompt = nil
-        }
-
         let audio = session.chunks.map { chunk in
             let fileExtension = URL(fileURLWithPath: chunk.filename)
                 .pathExtension.lowercased()
@@ -310,10 +289,9 @@ final class TranscriptHistoryStore {
             text: text,
             transcriptFilename: "transcript.txt",
             workflow: TranscriptWorkflowMetadata(
-                workflow: workflow,
-                transcriptionModel: transcriptionModel,
-                enhancementModel: enhancementModel,
-                configuredPrompt: configuredPrompt,
+                workflow: .transcriptionOnly,
+                transcriptionModel: session.resolvedTranscriptionModel,
+                transcriptionContext: session.resolvedTranscriptionContext,
                 usedScreenshotContext: session.screenshotFilename != nil
             ),
             audio: audio,
@@ -323,18 +301,6 @@ final class TranscriptHistoryStore {
             appBuild: info?["CFBundleVersion"] as? String,
             operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString
         )
-    }
-
-    private func resolvedEnhancementModel(
-        for cleanup: PersistedCleanupOptions
-    ) -> String {
-        let selected = cleanup.model.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !selected.isEmpty {
-            return selected
-        }
-        return cleanup.usesAudioEnhancement
-            ? OpenRouterService.defaultAudioEnhancementModel
-            : OpenRouterService.defaultCleanupModel
     }
 
     private func ensureDirectory() throws {
