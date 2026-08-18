@@ -1,11 +1,19 @@
 import Foundation
 import Security
 
+enum RealtimeTranscriptionAvailability: Equatable {
+    case disabled
+    case unsupportedModel
+    case missingOpenAIAPIKey
+    case available
+}
+
 @MainActor
 final class SettingsStore {
     private enum Keys {
         static let autoPaste = "autoPaste"
         static let restoreClipboard = "restoreClipboard"
+        static let realtimeTranscriptionEnabled = "realtimeTranscriptionEnabled"
         static let legacyOpenRouterAPIKey = "openRouterAPIKey"
         static let transcriptionModel = "openRouterTranscriptionModel"
         static let transcriptionContext = "openRouterTranscriptionContext"
@@ -13,14 +21,19 @@ final class SettingsStore {
     }
 
     private let defaults: UserDefaults
-    private let credentials: CredentialStore
+    private let openRouterCredentials: CredentialStore
+    private let openAICredentials: CredentialStore
 
     init(
         defaults: UserDefaults = .standard,
-        credentials: CredentialStore = CredentialStore()
+        credentials: CredentialStore = CredentialStore(),
+        openAICredentials: CredentialStore = CredentialStore(
+            account: "openai-api-key"
+        )
     ) {
         self.defaults = defaults
-        self.credentials = credentials
+        self.openRouterCredentials = credentials
+        self.openAICredentials = openAICredentials
         migrateLegacyCleanupPrompt()
         registerDefaults()
         migrateLegacyAPIKey()
@@ -37,14 +50,34 @@ final class SettingsStore {
     }
 
     var openRouterAPIKey: String {
-        get { credentials.readAPIKey() ?? "" }
+        get { openRouterCredentials.readAPIKey() ?? "" }
         set {
             do {
-                try credentials.writeAPIKey(newValue.trimmingCharacters(in: .whitespacesAndNewlines))
+                try openRouterCredentials.writeAPIKey(
+                    newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
             } catch {
                 print("Could not save OpenRouter API key: \(error.localizedDescription)")
             }
         }
+    }
+
+    var openAIAPIKey: String {
+        get { openAICredentials.readAPIKey() ?? "" }
+        set {
+            do {
+                try openAICredentials.writeAPIKey(
+                    newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            } catch {
+                print("Could not save OpenAI API key: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    var realtimeTranscriptionEnabled: Bool {
+        get { defaults.bool(forKey: Keys.realtimeTranscriptionEnabled) }
+        set { defaults.set(newValue, forKey: Keys.realtimeTranscriptionEnabled) }
     }
 
     var transcriptionModel: String {
@@ -74,18 +107,42 @@ final class SettingsStore {
         !openRouterAPIKey.isEmpty
     }
 
+    var hasOpenAIAPIKey: Bool {
+        !openAIAPIKey.isEmpty
+    }
+
+    var canUseRealtimeGPTTranscribe: Bool {
+        realtimeTranscriptionAvailability == .available
+    }
+
+    var realtimeTranscriptionAvailability: RealtimeTranscriptionAvailability {
+        guard realtimeTranscriptionEnabled else {
+            return .disabled
+        }
+
+        let model = transcriptionModel.lowercased()
+        guard model == "openai/gpt-transcribe" || model == "gpt-transcribe" else {
+            return .unsupportedModel
+        }
+        guard hasOpenAIAPIKey else {
+            return .missingOpenAIAPIKey
+        }
+
+        return .available
+    }
+
     private func registerDefaults() {
         defaults.register(defaults: [
             Keys.autoPaste: true,
             Keys.restoreClipboard: true,
+            Keys.realtimeTranscriptionEnabled: true,
             Keys.transcriptionModel: OpenRouterService.transcriptionModel,
             Keys.transcriptionContext: OpenRouterService.defaultTranscriptionInstruction
         ])
     }
 
     private func migrateLegacyCleanupPrompt() {
-        guard defaults.object(forKey: Keys.transcriptionContext) == nil,
-              let legacyPrompt = defaults.string(
+        guard let legacyPrompt = defaults.string(
                 forKey: Keys.legacyCleanupPrompt
               ),
               !legacyPrompt.trimmingCharacters(
@@ -95,11 +152,19 @@ final class SettingsStore {
             return
         }
 
+        let currentContext = defaults.string(forKey: Keys.transcriptionContext)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard currentContext.isEmpty ||
+                currentContext == OpenRouterService.defaultTranscriptionInstruction
+        else {
+            return
+        }
+
         defaults.set(legacyPrompt, forKey: Keys.transcriptionContext)
     }
 
     private func migrateLegacyAPIKey() {
-        guard credentials.readAPIKey() == nil else {
+        guard openRouterCredentials.readAPIKey() == nil else {
             defaults.removeObject(forKey: Keys.legacyOpenRouterAPIKey)
             return
         }
@@ -111,7 +176,7 @@ final class SettingsStore {
         }
 
         do {
-            try credentials.writeAPIKey(legacyKey)
+            try openRouterCredentials.writeAPIKey(legacyKey)
             defaults.removeObject(forKey: Keys.legacyOpenRouterAPIKey)
         } catch {
             print("Could not migrate OpenRouter API key to Keychain: \(error.localizedDescription)")
@@ -121,10 +186,14 @@ final class SettingsStore {
 
 final class CredentialStore {
     private let service: String
-    private let account = "openrouter-api-key"
+    private let account: String
 
-    init(service: String = Bundle.main.bundleIdentifier ?? "com.supersamuel.app") {
+    init(
+        service: String = Bundle.main.bundleIdentifier ?? "com.supersamuel.app",
+        account: String = "openrouter-api-key"
+    ) {
         self.service = service
+        self.account = account
     }
 
     func readAPIKey() -> String? {

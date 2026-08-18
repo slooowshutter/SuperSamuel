@@ -7,8 +7,7 @@ struct RecordingOverlayView: View {
     var onClearScreenshot: (() -> Void)?
     var onRetry: (() -> Void)?
     var onDelete: (() -> Void)?
-
-    private let panelWidth: CGFloat = 376
+    var onResize: ((CGSize, Bool) -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 13) {
@@ -30,12 +29,45 @@ struct RecordingOverlayView: View {
                 .overlay(Color.white.opacity(0.13))
 
             statusFooter
+                .frame(maxHeight: .infinity, alignment: .top)
         }
         .padding(.horizontal, 18)
         .padding(.top, 16)
         .padding(.bottom, 17)
-        .frame(width: panelWidth)
+        .frame(
+            minWidth: 340,
+            maxWidth: .infinity,
+            minHeight: 300,
+            maxHeight: .infinity
+        )
+        .overlay(alignment: .bottomTrailing) {
+            resizeGrip
+        }
         .environment(\.colorScheme, .dark)
+    }
+
+    private var resizeGrip: some View {
+        Image(systemName: "arrow.up.left.and.arrow.down.right")
+            .font(.system(size: 10, weight: .bold))
+            .foregroundStyle(Color.white.opacity(0.58))
+            .frame(width: 27, height: 27)
+            .background(
+                Color.black.opacity(0.18),
+                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            )
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .global)
+                    .onChanged { value in
+                        onResize?(value.translation, false)
+                    }
+                    .onEnded { value in
+                        onResize?(value.translation, true)
+                    }
+            )
+            .padding(7)
+            .help("Drag to resize")
+            .accessibilityLabel("Resize transcription window")
     }
 
     private var header: some View {
@@ -142,15 +174,32 @@ struct RecordingOverlayView: View {
 
     private var statusFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text(footerText)
-                .font(.system(size: 11.5, weight: .medium))
-                .foregroundStyle(
-                    state.phase.isError
-                        ? Color.orange.opacity(0.96)
-                        : Color.white.opacity(0.66)
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    Text(footerText)
+                        .font(.system(size: 11.5, weight: .medium))
+                        .foregroundStyle(
+                            state.phase.isError
+                                ? Color.orange.opacity(0.96)
+                                : Color.white.opacity(0.66)
+                        )
+                        .textSelection(.enabled)
+                        .frame(
+                            maxWidth: .infinity,
+                            alignment: .topLeading
+                        )
+                        .id("transcript-bottom")
+                }
+                .frame(
+                    minHeight: state.phase == .recording ? 78 : 28,
+                    maxHeight: .infinity
                 )
-                .lineLimit(state.phase.isError ? 3 : 1)
-                .fixedSize(horizontal: false, vertical: true)
+                .onChange(of: footerText) { _ in
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("transcript-bottom", anchor: .bottom)
+                    }
+                }
+            }
 
             if state.showsRecoveryActions {
                 HStack(spacing: 8) {
@@ -203,8 +252,9 @@ struct RecordingOverlayView: View {
             return screenshotMessage
         }
 
-        return state.transcriptPreviewLines.last
-            ?? "Press Option+Space to start dictation."
+        return state.transcriptText.isEmpty
+            ? "Press Option+Space to start dictation."
+            : state.transcriptText
     }
 
     private var statusLabel: String {

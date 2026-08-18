@@ -30,7 +30,7 @@ final class SettingsWindowController {
         }
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 680, height: 620),
+            contentRect: NSRect(x: 0, y: 0, width: 680, height: 700),
             styleMask: [
                 .titled,
                 .closable,
@@ -59,12 +59,18 @@ private struct SettingsView: View {
     private let settings: SettingsStore
 
     @State private var openRouterAPIKey: String
+    @State private var openAIAPIKey: String
+    @State private var realtimeTranscriptionEnabled: Bool
     @State private var transcriptionModel: String
     @State private var transcriptionContext: String
 
     init(settings: SettingsStore) {
         self.settings = settings
         _openRouterAPIKey = State(initialValue: settings.openRouterAPIKey)
+        _openAIAPIKey = State(initialValue: settings.openAIAPIKey)
+        _realtimeTranscriptionEnabled = State(
+            initialValue: settings.realtimeTranscriptionEnabled
+        )
         _transcriptionModel = State(initialValue: settings.transcriptionModel)
         _transcriptionContext = State(initialValue: settings.transcriptionContext)
     }
@@ -92,7 +98,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "OpenRouter",
-                    description: "Your API key is used for the single transcription request."
+                    description: "Used as the durable saved-audio fallback if realtime transcription is unavailable."
                 ) {
                     SecureField("sk-or-v1-...", text: apiKeyBinding)
                         .textFieldStyle(.plain)
@@ -107,8 +113,36 @@ private struct SettingsView: View {
                 }
 
                 section(
+                    title: "OpenAI Realtime",
+                    description: "Streams microphone audio to GPT Transcribe over WebSocket and shows completed turns while you record."
+                ) {
+                    Text("OpenAI API key (separate from OpenRouter)")
+                        .font(.system(size: 11, weight: .semibold))
+
+                    SecureField("sk-...", text: openAIAPIKeyBinding)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced))
+                        .padding(.horizontal, 11)
+                        .padding(.vertical, 9)
+                        .liquidGlassSurface(cornerRadius: 11)
+
+                    Toggle(
+                        "Use realtime GPT Transcribe",
+                        isOn: realtimeTranscriptionEnabledBinding
+                    )
+
+                    Label(realtimeStatusText, systemImage: realtimeStatusSymbol)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(realtimeStatusColor)
+
+                    Text("An OpenRouter key cannot authenticate the direct OpenAI WebSocket. The OpenAI key is stored separately in your macOS Keychain.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+
+                section(
                     title: "Transcription",
-                    description: "One model listens to the recording and returns ready-to-paste text."
+                    description: "GPT Transcribe produces the fast live draft; this OpenRouter model remains the saved-audio fallback."
                 ) {
                     TextField(
                         OpenRouterService.transcriptionModel,
@@ -158,13 +192,14 @@ private struct SettingsView: View {
                             .foregroundStyle(.secondary)
                     }
                 }
+
             }
             .padding(.horizontal, 20)
             .padding(.top, 44)
             .padding(.bottom, 20)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .frame(minWidth: 680, minHeight: 620)
+        .frame(minWidth: 680, minHeight: 700)
     }
 
     private var apiKeyBinding: Binding<String> {
@@ -173,6 +208,26 @@ private struct SettingsView: View {
             set: { value in
                 openRouterAPIKey = value
                 settings.openRouterAPIKey = value
+            }
+        )
+    }
+
+    private var openAIAPIKeyBinding: Binding<String> {
+        Binding(
+            get: { openAIAPIKey },
+            set: { value in
+                openAIAPIKey = value
+                settings.openAIAPIKey = value
+            }
+        )
+    }
+
+    private var realtimeTranscriptionEnabledBinding: Binding<Bool> {
+        Binding(
+            get: { realtimeTranscriptionEnabled },
+            set: { value in
+                realtimeTranscriptionEnabled = value
+                settings.realtimeTranscriptionEnabled = value
             }
         )
     }
@@ -195,6 +250,43 @@ private struct SettingsView: View {
                 settings.transcriptionContext = value
             }
         )
+    }
+
+    private var realtimeStatusText: String {
+        guard realtimeTranscriptionEnabled else {
+            return "Live transcription is disabled."
+        }
+        guard isGPTTranscribeSelected else {
+            return "Select GPT Transcribe to activate live transcription."
+        }
+        guard !openAIAPIKey.trimmingCharacters(
+            in: .whitespacesAndNewlines
+        ).isEmpty else {
+            return "Not active — add an OpenAI API key."
+        }
+
+        return "Ready for live GPT Transcribe turns."
+    }
+
+    private var realtimeStatusSymbol: String {
+        realtimeIsReady ? "checkmark.circle.fill" : "exclamationmark.triangle.fill"
+    }
+
+    private var realtimeStatusColor: Color {
+        realtimeIsReady ? .green : .orange
+    }
+
+    private var realtimeIsReady: Bool {
+        realtimeTranscriptionEnabled &&
+            isGPTTranscribeSelected &&
+            !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var isGPTTranscribeSelected: Bool {
+        let model = transcriptionModel
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return model == "openai/gpt-transcribe" || model == "gpt-transcribe"
     }
 
     @ViewBuilder
