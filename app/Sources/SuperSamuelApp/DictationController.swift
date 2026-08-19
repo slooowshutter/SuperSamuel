@@ -14,6 +14,7 @@ final class DictationController {
     private let permissions = PermissionsService()
     private let hotkeyService = HotkeyService()
     private let audioCapture = AudioCaptureService()
+    private let realtimeAudioCapture = RealtimeAudioCaptureService()
     private let clipboard = ClipboardService()
     private let openRouterService = OpenRouterService()
     private let screenshotCapture = ScreenshotCaptureService()
@@ -39,6 +40,8 @@ final class DictationController {
     private var targetApplication: NSRunningApplication?
     private var activeRecordingID: UUID?
     private var activeInputDevice: AudioInputDeviceInfo?
+    private var realtimeSession: RealtimeTranscriptionService?
+    private var realtimeStartTask: Task<Void, Never>?
 
     private var processingTask: Task<Void, Never>?
     private var processingSessionID: UUID?
@@ -71,6 +74,7 @@ final class DictationController {
     func shutdown() {
         errorResetTask?.cancel()
         processingTask?.cancel()
+        cancelActiveRealtimeTranscription()
 
         if let processingSessionID {
             try? recordingStore.markReady(
@@ -258,6 +262,7 @@ final class DictationController {
             )
             overlayController?.show()
             menuBarController?.updateStatusTitle(for: .recording)
+            startRealtimeTranscriptionIfAvailable(sessionID: session.id)
         } catch {
             showError(error.localizedDescription)
         }
@@ -268,6 +273,7 @@ final class DictationController {
             return
         }
 
+        let realtimeSession = detachActiveRealtimeSession()
         let pasteTarget = currentPasteTarget()
         do {
             try finishCurrentChunk(sessionID: sessionID)
@@ -278,6 +284,7 @@ final class DictationController {
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
         } catch {
+            realtimeSession?.cancel()
             try? recordingStore.markFailed(
                 sessionID,
                 message: error.localizedDescription
@@ -301,6 +308,7 @@ final class DictationController {
 
         processSavedRecording(
             sessionID,
+            realtimeSession: realtimeSession,
             delivery: DeliveryOptions(
                 targetApplication: pasteTarget,
                 autoPaste: settings.autoPaste,
@@ -318,11 +326,105 @@ final class DictationController {
         )
     }
 
+    private func startRealtimeTranscriptionIfAvailable(sessionID: UUID) {
+        switch settings.realtimeTranscriptionAvailability {
+        case .available:
+            break
+        case .missingOpenAIAPIKey:
+            appState.setProgressMessage(
+                "Live transcription needs a separate OpenAI API key in Settings. Recording locally..."
+            )
+            return
+        case .disabled, .unsupportedModel:
+            return
+        }
+
+        let service = RealtimeTranscriptionService { [weak self] transcript in
+            guard let self else {
+                return
+            }
+            guard self.activeRecordingID == sessionID ||
+                    self.processingSessionID == sessionID
+            else {
+                return
+            }
+            self.appState.setTranscriptPreview(fullText: transcript)
+        }
+        realtimeSession = service
+        appState.setProgressMessage("Listening for live transcription...")
+
+        do {
+            try realtimeAudioCapture.start { [weak self] data in
+                DispatchQueue.main.async { [weak self] in
+                    guard self?.activeRecordingID == sessionID else {
+                        return
+                    }
+                    self?.realtimeSession?.appendAudio(data)
+                }
+            }
+        } catch {
+            realtimeSession = nil
+            service.cancel()
+            print(
+                "Realtime audio sidecar unavailable; recording locally: " +
+                    error.localizedDescription
+            )
+            return
+        }
+
+        let apiKey = settings.openAIAPIKey
+        let context = settings.transcriptionContext
+        realtimeStartTask = Task { @MainActor [weak self, weak service] in
+            guard let service else {
+                return
+            }
+            do {
+                try await service.start(
+                    apiKey: apiKey,
+                    transcriptionContext: context
+                )
+            } catch {
+                service.cancel()
+                guard let self, self.realtimeSession === service else {
+                    return
+                }
+                self.realtimeAudioCapture.stop()
+                self.realtimeSession = nil
+                self.realtimeStartTask = nil
+                if self.activeRecordingID == sessionID {
+                    self.appState.setProgressMessage("Recording locally...")
+                }
+                print(
+                    "Realtime connection unavailable; recording locally: " +
+                        error.localizedDescription
+                )
+            }
+        }
+    }
+
+    private func detachActiveRealtimeSession() -> RealtimeTranscriptionService? {
+        realtimeAudioCapture.stop()
+        let service = realtimeSession
+        realtimeSession = nil
+        realtimeStartTask = nil
+        return service
+    }
+
+    private func cancelActiveRealtimeTranscription() {
+        realtimeAudioCapture.stop()
+        realtimeStartTask?.cancel()
+        realtimeStartTask = nil
+        realtimeSession?.cancel()
+        realtimeSession = nil
+    }
+
     private func preserveActiveRecording(message: String) {
         guard let sessionID = activeRecordingID else {
             stopElapsedTimer()
             return
         }
+
+        cancelActiveRealtimeTranscription()
 
         if audioCapture.isRecording {
             do {
@@ -351,6 +453,7 @@ final class DictationController {
 
     private func processSavedRecording(
         _ sessionID: UUID,
+        realtimeSession: RealtimeTranscriptionService? = nil,
         delivery: DeliveryOptions
     ) {
         guard processingTask == nil, activeRecordingID == nil else {
@@ -384,6 +487,7 @@ final class DictationController {
         processingTask = Task { [weak self] in
             await self?.process(
                 sessionID: sessionID,
+                realtimeSession: realtimeSession,
                 delivery: delivery,
                 operationID: operationID
             )
@@ -392,13 +496,39 @@ final class DictationController {
 
     private func process(
         sessionID: UUID,
+        realtimeSession: RealtimeTranscriptionService?,
         delivery: DeliveryOptions,
         operationID: UUID
     ) async {
         do {
+            var realtimeTranscript: String?
+            var lastResortRealtimeTranscript: String?
+            if let realtimeSession {
+                appState.setProgressMessage("Finishing live transcript...")
+                do {
+                    realtimeTranscript = try await realtimeSession.finish()
+                } catch is CancellationError {
+                    realtimeSession.cancel()
+                    throw CancellationError()
+                } catch {
+                    lastResortRealtimeTranscript = realtimeSession
+                        .currentTranscript
+                    realtimeSession.cancel()
+                    print(
+                        "Realtime transcription unavailable; using saved recording: " +
+                            error.localizedDescription
+                    )
+                    appState.setProgressMessage(
+                        "Realtime unavailable. Transcribing saved recording..."
+                    )
+                }
+            }
+
             let result = try await recordingProcessor.process(
                 sessionID: sessionID,
-                apiKey: settings.openRouterAPIKey
+                apiKey: settings.openRouterAPIKey,
+                preferredTranscript: realtimeTranscript,
+                lastResortTranscript: lastResortRealtimeTranscript
             ) { [weak self] progress in
                 self?.showProcessingProgress(progress)
             }
@@ -914,6 +1044,7 @@ final class DictationController {
                 let previousAttachment = appState.attachedScreenshot
                 appState.attachedScreenshot = attachment
                 screenshotCapture.remove(previousAttachment)
+                updateRealtimeContext(for: attachment)
                 return
             } catch {
                 lastError = error
@@ -924,11 +1055,44 @@ final class DictationController {
             lastError?.localizedDescription ?? "Could not attach a screenshot."
     }
 
+    private func updateRealtimeContext(for attachment: AttachedScreenshot) {
+        let attachmentID = attachment.id
+        Task { @MainActor [weak self] in
+            guard let self else {
+                return
+            }
+            let visibleText = await ScreenshotContextExtractor.extractText(
+                from: attachment.fileURL
+            )
+            guard
+                self.activeRecordingID != nil,
+                self.appState.attachedScreenshot?.id == attachmentID
+            else {
+                return
+            }
+
+            var contextParts = [self.settings.transcriptionContext]
+            if let visibleText {
+                contextParts.append(
+                    "Visible text extracted locally from the attached app screenshot. Use it only to disambiguate words in the audio:\n\(visibleText)"
+                )
+            }
+            self.realtimeSession?.updateTranscriptionContext(
+                contextParts.joined(separator: "\n\n")
+            )
+        }
+    }
+
     private func clearAttachedScreenshot() {
         screenshotCapture.remove(appState.attachedScreenshot)
         appState.attachedScreenshot = nil
         appState.screenshotStatusMessage = nil
         appState.isCapturingScreenshot = false
+        if activeRecordingID != nil {
+            realtimeSession?.updateTranscriptionContext(
+                settings.transcriptionContext
+            )
+        }
     }
 
     private func showError(

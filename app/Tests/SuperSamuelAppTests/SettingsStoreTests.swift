@@ -71,4 +71,47 @@ final class SettingsStoreTests: XCTestCase {
             "Preserve Gemini 3.6 exactly."
         )
     }
+
+    func testRealtimeOpenAIKeyUsesSeparateKeychainEntry() throws {
+        let suiteName = "SuperSamuelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        let openRouterCredentials = CredentialStore(service: suiteName)
+        let openAICredentials = CredentialStore(
+            service: suiteName,
+            account: "openai-api-key"
+        )
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? openRouterCredentials.writeAPIKey("")
+            try? openAICredentials.writeAPIKey("")
+        }
+
+        let settings = SettingsStore(
+            defaults: defaults,
+            credentials: openRouterCredentials,
+            openAICredentials: openAICredentials
+        )
+        settings.openRouterAPIKey = "sk-or-test"
+
+        XCTAssertEqual(settings.openRouterAPIKey, "sk-or-test")
+        XCTAssertEqual(
+            settings.realtimeTranscriptionAvailability,
+            .missingOpenAIAPIKey
+        )
+        XCTAssertFalse(settings.canUseRealtimeGPTTranscribe)
+
+        settings.openAIAPIKey = "sk-openai-test"
+
+        XCTAssertEqual(settings.openAIAPIKey, "sk-openai-test")
+        XCTAssertTrue(settings.realtimeTranscriptionEnabled)
+        XCTAssertEqual(settings.realtimeTranscriptionAvailability, .available)
+        XCTAssertTrue(settings.canUseRealtimeGPTTranscribe)
+
+        settings.transcriptionModel = "mistralai/voxtral-mini-transcribe"
+        XCTAssertEqual(
+            settings.realtimeTranscriptionAvailability,
+            .unsupportedModel
+        )
+        XCTAssertFalse(settings.canUseRealtimeGPTTranscribe)
+    }
 }

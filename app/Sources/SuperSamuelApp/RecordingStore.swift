@@ -47,6 +47,7 @@ struct RecordingSession: Codable, Identifiable {
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         return context.isEmpty ? nil : context
     }
+
 }
 
 struct PendingRecordingSummary: Identifiable {
@@ -451,6 +452,28 @@ final class RecordingStore {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    func draftTranscript(sessionID: UUID) -> String? {
+        let url = directory(for: sessionID)
+            .appendingPathComponent("draft-transcript.txt")
+        guard fileManager.fileExists(atPath: url.path),
+              let text = try? String(contentsOf: url, encoding: .utf8)
+        else {
+            return nil
+        }
+
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    func saveDraftTranscript(_ text: String, sessionID: UUID) throws {
+        try text.write(
+            to: directory(for: sessionID)
+                .appendingPathComponent("draft-transcript.txt"),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
     func saveFinalTranscript(_ text: String, sessionID: UUID) throws {
         try text.write(
             to: directory(for: sessionID)
@@ -574,7 +597,11 @@ final class RecordingStore {
     }
 
     private func normalizedTranscriptionContext(_ context: String) -> String? {
-        let normalized = context.trimmingCharacters(in: .whitespacesAndNewlines)
+        normalized(context)
+    }
+
+    private func normalized(_ value: String) -> String? {
+        let normalized = value.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
     }
 

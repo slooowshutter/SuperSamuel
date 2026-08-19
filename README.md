@@ -4,15 +4,24 @@ SuperSamuel is a small native macOS dictation app:
 
 - Press `Option+Space` to start and stop recording.
 - Record locally as compact 16 kHz mono AAC audio.
-- Send each recording through one configurable OpenRouter transcription model,
-  defaulting to `openai/gpt-transcribe`.
-- Give that model editable instructions for minimal cleanup, terminology,
-  names, languages, version numbers, and punctuation.
+- Optionally stream a 24 kHz PCM sidecar directly to OpenAI's Realtime API,
+  using `gpt-transcribe` and showing the transcript in the recording overlay.
+- Keep the local recording and configurable OpenRouter transcription path,
+  defaulting to `openai/gpt-transcribe`, as the durable fallback.
 - Paste the result back into the app that was active while dictating.
 - Optionally attach a screenshot as context. Visible text is extracted locally
   and added to the transcription instructions.
 
-There is no realtime websocket, token broker, or streaming transcript path.
+Realtime transcription uses a direct authenticated WebSocket connection. Server
+voice activity detection commits a turn after 500 ms of detected silence, so
+completed phrases appear while recording. Releasing the hotkey commits any
+remaining audio immediately.
+
+The recording overlay keeps the complete live transcript in a scrollable area,
+shows about five lines at its default size, and can be resized by dragging its
+bottom-right resize grip. `gpt-transcribe` does not support the Realtime API's
+`audio.input.transcription.delay` presets; attempting to send one causes the
+session update to be rejected, so SuperSamuel leaves that parameter unset.
 
 On macOS 26 and newer, the compact notification-style recording overlay and
 settings window use untinted native **clear Liquid Glass** across their full
@@ -27,6 +36,7 @@ there.
 - macOS 13 or newer
 - Xcode Command Line Tools
 - An OpenRouter API key with available credits
+- Optionally, an OpenAI API key with Realtime API access for live transcription
 
 Install the command-line tools if needed:
 
@@ -56,13 +66,16 @@ cd app
 swift build
 ```
 
-## Configure OpenRouter
+## Configure transcription
 
 1. Open the `SS` menu-bar item.
 2. Choose **Settings…**
 3. Enter your OpenRouter API key. It is stored in the macOS Keychain.
-4. Optionally change the transcription model from `openai/gpt-transcribe`.
-5. Edit the transcription instructions to match your dictation style and
+4. Enter an OpenAI API key and leave **Use realtime GPT Transcribe** enabled to
+   show live transcription. This key is stored in a separate Keychain entry.
+5. Optionally change the fallback model from `openai/gpt-transcribe`. Realtime
+   is active only while this model is selected.
+6. Edit the transcription instructions to match your dictation style and
    expected terminology.
 
 The default transcription model is:
@@ -71,12 +84,14 @@ The default transcription model is:
 openai/gpt-transcribe
 ```
 
-SuperSamuel sends the instructions through OpenRouter's provider-specific
-OpenAI `prompt` option. GPT Transcribe accepts free-form context and can use it
-for light cleanup and style guidance, but it remains a transcription model: the
-instructions do not alter the audio waveform, and large semantic rewrites are
-not guaranteed. Screenshot text is extracted locally and appended as additional
-disambiguation context without adding a second model request.
+SuperSamuel sends the instructions as GPT Transcribe's free-form `prompt`, both
+for the direct Realtime session and for the OpenRouter fallback. GPT Transcribe
+can use that context for light cleanup and style guidance, but it remains a
+transcription model: the instructions do not alter the audio waveform, and
+large semantic rewrites are not guaranteed. Screenshot text is extracted
+locally and appended as additional disambiguation context without adding a
+second model request. The realtime transcript is used directly; SuperSamuel
+does not send it through a separate cleanup model before pasting.
 
 ## Headless dictation benchmark
 
@@ -156,10 +171,13 @@ SuperSamuel may request:
 ## Request flow
 
 ```text
-record durable M4A audio
-  → selected OpenRouter transcription model
-    + transcription instructions
-    + optional locally extracted screenshot text
+record durable M4A audio + best-effort PCM sidecar
+  → OpenAI Realtime WebSocket using gpt-transcribe
+    → live transcript in the recording overlay
+    → final transcript
+  → if realtime is disabled or unavailable:
+    selected OpenRouter transcription model using the durable M4A
+  → save the transcript beside the recording
   → clipboard
   → optional Command+V paste
 ```
@@ -169,8 +187,10 @@ and any attached screenshot are moved together into the permanent transcript
 history. They remain there until history is explicitly cleared.
 
 The waveform is calculated from `AVAudioRecorder` metering while the durable AAC
-file is written. The recorder is recreated for every session so microphone
-hardware changes after sleep or lock do not reuse a stale audio route.
+file is written. A separate, best-effort audio engine produces the PCM stream;
+it never replaces the saved recording. The recorder and streaming engine are
+recreated for every session so microphone hardware changes after sleep or lock
+do not reuse a stale audio route.
 
 ## Recording recovery
 
@@ -185,6 +205,7 @@ Each recording has its own folder containing:
 - The durable M4A recording (legacy recovered sessions may contain several parts)
 - A JSON manifest
 - Cached transcript parts (legacy recordings may also contain cleaned parts)
+- The saved realtime or fallback draft in `draft-transcript.txt`
 - The final transcript while processing completes
 - Optional screenshot context
 
@@ -229,20 +250,28 @@ also permanently deletes its archived recordings and metadata.
 
 ## Upload limits
 
-SuperSamuel sends audio through OpenRouter's base64 JSON request paths. Durable
-recordings remain compact 32 kbps M4A files (roughly 14 MB/hour) and are sent
-directly to the transcription endpoint. Successful results are cached so a
-retry does not repeat completed work.
+With realtime enabled, SuperSamuel streams 24 kHz mono PCM to OpenAI while also
+writing its compact 32 kbps M4A recording (roughly 14 MB/hour). If realtime is
+disabled, cannot connect, or cannot complete, the durable recording is sent
+through OpenRouter's base64 JSON transcription path. Successful results are
+cached so a retry does not repeat completed work.
 
 Official references:
 
 - [OpenRouter speech-to-text](https://openrouter.ai/docs/guides/overview/multimodal/stt)
 - [OpenRouter transcription API usage](https://openrouter.ai/docs/guides/overview/multimodal/stt#api-usage)
+- [OpenAI Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription)
+- [OpenAI Realtime WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket)
 
 ## Manual verification
 
 - Start and stop recording with `Option+Space`.
 - Confirm the waveform and timer update while recording.
+- With an OpenAI key configured, pause for about 500 ms and confirm completed
+  phrases appear in the bottom of the recording overlay.
+- Disable realtime and confirm the saved-recording path still transcribes.
+- Interrupt the network during recording and confirm the saved M4A is used as
+  the fallback.
 - Cancel during transcription and confirm nothing is pasted.
 - Confirm the cancelled recording appears under **Unsent Recordings**.
 - Relaunch with an unsent recording and test Send, Keep, Reveal, and Delete.

@@ -1,9 +1,26 @@
 import Foundation
 
+enum RecordingProcessingStage: Equatable {
+    case transcribing
+}
+
 struct RecordingProcessingProgress {
+    let stage: RecordingProcessingStage
     let currentPart: Int
     let totalParts: Int
     let transcriptPreview: String
+
+    init(
+        stage: RecordingProcessingStage = .transcribing,
+        currentPart: Int,
+        totalParts: Int,
+        transcriptPreview: String
+    ) {
+        self.stage = stage
+        self.currentPart = currentPart
+        self.totalParts = totalParts
+        self.transcriptPreview = transcriptPreview
+    }
 }
 
 struct ProcessedRecording {
@@ -29,6 +46,8 @@ final class RecordingProcessor {
     func process(
         sessionID: UUID,
         apiKey: String,
+        preferredTranscript: String? = nil,
+        lastResortTranscript: String? = nil,
         onProgress: (RecordingProcessingProgress) -> Void
     ) async throws -> ProcessedRecording {
         let session = try recordingStore.load(sessionID)
@@ -39,11 +58,15 @@ final class RecordingProcessor {
         ) {
             finalTranscript = cachedFinal
         } else {
-            finalTranscript = try await transcribe(
+            let draftTranscript = try await resolveDraft(
                 session: session,
                 apiKey: apiKey,
+                preferredTranscript: preferredTranscript,
+                lastResortTranscript: lastResortTranscript,
                 onProgress: onProgress
             )
+            finalTranscript = draftTranscript
+
             try recordingStore.saveFinalTranscript(
                 finalTranscript,
                 sessionID: sessionID
@@ -63,6 +86,56 @@ final class RecordingProcessor {
         try recordingStore.deleteSession(sessionID)
 
         return ProcessedRecording(transcript: finalTranscript)
+    }
+
+    private func resolveDraft(
+        session: RecordingSession,
+        apiKey: String,
+        preferredTranscript: String?,
+        lastResortTranscript: String?,
+        onProgress: (RecordingProcessingProgress) -> Void
+    ) async throws -> String {
+        if let preferredTranscript = normalized(preferredTranscript) {
+            try recordingStore.saveDraftTranscript(
+                preferredTranscript,
+                sessionID: session.id
+            )
+            return preferredTranscript
+        }
+
+        if let cachedDraft = recordingStore.draftTranscript(
+            sessionID: session.id
+        ) {
+            return cachedDraft
+        }
+
+        let draftTranscript: String
+        do {
+            draftTranscript = try await transcribe(
+                session: session,
+                apiKey: apiKey,
+                onProgress: onProgress
+            )
+        } catch OpenRouterServiceError.noSpeechDetected {
+            guard let lastResortTranscript = normalized(
+                lastResortTranscript
+            ) else {
+                throw OpenRouterServiceError.noSpeechDetected
+            }
+            draftTranscript = lastResortTranscript
+        }
+
+        try recordingStore.saveDraftTranscript(
+            draftTranscript,
+            sessionID: session.id
+        )
+        return draftTranscript
+    }
+
+    private func normalized(_ transcript: String?) -> String? {
+        let transcript = transcript?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return transcript.isEmpty ? nil : transcript
     }
 
     private func transcribe(

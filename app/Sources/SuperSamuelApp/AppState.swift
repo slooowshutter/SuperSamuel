@@ -13,6 +13,7 @@ final class AppState: ObservableObject {
     @Published var phase: DictationPhase = .idle
     @Published var elapsedSeconds: TimeInterval = 0
     @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
+    @Published var transcriptText = "Press Option+Space to start dictation."
     @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
     @Published var attachedScreenshot: AttachedScreenshot?
     @Published var screenshotStatusMessage: String?
@@ -41,20 +42,23 @@ final class AppState: ObservableObject {
     func setTranscriptPreview(fullText: String) {
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
+            transcriptText = "No speech was detected."
             transcriptPreviewLines = ["No speech was detected."]
             return
         }
 
+        transcriptText = trimmed
         let lines = wrappedPreviewLines(from: trimmed, maxCharsPerLine: 56)
         if lines.isEmpty {
             transcriptPreviewLines = [trimmed]
             return
         }
 
-        transcriptPreviewLines = Array(lines.suffix(3))
+        transcriptPreviewLines = Array(lines.suffix(5))
     }
 
     func setProgressMessage(_ message: String) {
+        transcriptText = message
         transcriptPreviewLines = [message]
     }
 
@@ -62,6 +66,7 @@ final class AppState: ObservableObject {
         setPhase(.recording)
         setElapsed(seconds: 0)
         waveformSamples = Array(repeating: 0, count: maxWaveSamples)
+        transcriptText = "Recording locally..."
         transcriptPreviewLines = ["Recording locally..."]
         recordingDeviceName = deviceName
         attachedScreenshot = nil

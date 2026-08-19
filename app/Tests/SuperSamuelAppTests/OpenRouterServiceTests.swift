@@ -448,6 +448,103 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testProcessorArchivesPreferredRealtimeTranscriptWithoutUpload() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let recordingStore = RecordingStore(rootDirectory: root)
+        let historyStore = TranscriptHistoryStore(rootDirectory: root)
+        let session = try recordingStore.createSession()
+        _ = try addAudibleChunk(
+            to: recordingStore,
+            sessionID: session.id,
+            sample: 10_000
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let service = OpenRouterService(
+            urlSession: URLSession(configuration: configuration)
+        )
+        let processor = RecordingProcessor(
+            recordingStore: recordingStore,
+            historyStore: historyStore,
+            openRouterService: service
+        )
+
+        URLProtocolStub.handler = { _ in
+            XCTFail("A completed realtime transcript must skip the fallback upload")
+            throw URLError(.badServerResponse)
+        }
+
+        let result = try await processor.process(
+            sessionID: session.id,
+            apiKey: "unused-key",
+            preferredTranscript: "  Realtime result.  ",
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(result.transcript, "Realtime result.")
+        XCTAssertEqual(
+            try historyStore.item(id: session.id)?.text,
+            "Realtime result."
+        )
+    }
+
+    @MainActor
+    func testProcessorPreservesLiveTextWhenSavedAudioReportsNoSpeech() async throws {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+
+        let recordingStore = RecordingStore(rootDirectory: root)
+        let historyStore = TranscriptHistoryStore(rootDirectory: root)
+        let session = try recordingStore.createSession()
+        _ = try addAudibleChunk(
+            to: recordingStore,
+            sessionID: session.id,
+            sample: 10_000
+        )
+
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let service = OpenRouterService(
+            urlSession: URLSession(configuration: configuration)
+        )
+        let processor = RecordingProcessor(
+            recordingStore: recordingStore,
+            historyStore: historyStore,
+            openRouterService: service
+        )
+
+        URLProtocolStub.handler = { request in
+            let response = try XCTUnwrap(
+                HTTPURLResponse(
+                    url: request.url!,
+                    statusCode: 200,
+                    httpVersion: nil,
+                    headerFields: nil
+                )
+            )
+            return (response, Data(#"{"text":""}"#.utf8))
+        }
+
+        let result = try await processor.process(
+            sessionID: session.id,
+            apiKey: "test-key",
+            lastResortTranscript: "Bruh, dude.",
+            onProgress: { _ in }
+        )
+
+        XCTAssertEqual(result.transcript, "Bruh, dude.")
+        XCTAssertEqual(
+            try historyStore.item(id: session.id)?.text,
+            "Bruh, dude."
+        )
+    }
+
+    @MainActor
     func testRetryReusesSuccessfulChunkAfterLaterRequestFails() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
