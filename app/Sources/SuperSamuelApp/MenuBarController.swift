@@ -201,7 +201,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             actions.addItem(revealItem)
 
             let deleteItem = NSMenuItem(
-                title: "Move Recording to Trash...",
+                title: "Move Recording to Trash",
                 action: #selector(handleDeletePendingRecording(_:)),
                 keyEquivalent: ""
             )
@@ -236,6 +236,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 )
                 item.toolTip = transcript.text
                 let actions = NSMenu()
+
+                if transcript.savedCaptureContinuous == false {
+                    let notice = NSMenuItem(
+                        title: "Microphone interrupted; some words may be missing.",
+                        action: nil,
+                        keyEquivalent: ""
+                    )
+                    notice.isEnabled = false
+                    actions.addItem(notice)
+                    actions.addItem(.separator())
+                }
 
                 let copyItem = NSMenuItem(
                     title: "Copy Transcript",

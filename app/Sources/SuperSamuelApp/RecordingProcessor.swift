@@ -1,7 +1,17 @@
+import AVFoundation
 import Foundation
+
+enum RecordingProcessingError: LocalizedError {
+    case incompleteSavedCapture
+
+    var errorDescription: String? {
+        "Microphone capture was interrupted. The recorded parts and partial transcript were kept; audio from the interruption could not be recovered."
+    }
+}
 
 enum RecordingProcessingStage: Equatable {
     case transcribing
+    case cleaningUp
 }
 
 struct RecordingProcessingProgress {
@@ -25,35 +35,50 @@ struct RecordingProcessingProgress {
 
 struct ProcessedRecording {
     let transcript: String
+    let captureWarning: String?
+}
+
+protocol RecordingTranscriptionService: Sendable {
+    func transcribe(
+        apiKey: String, model: String, transcriptionContext: String?, audio: RecordedAudio
+    ) async throws -> String
+}
+
+protocol TranscriptCleanupService: Sendable {
+    func cleanUp(apiKey: String, transcript: String, configuration: TranscriptCleanupConfiguration) async throws -> String
 }
 
 @MainActor
 final class RecordingProcessor {
     private let recordingStore: RecordingStore
     private let historyStore: TranscriptHistoryStore
-    private let openRouterService: OpenRouterService
+    private let openRouterService: any RecordingTranscriptionService
+    private let cleanupService: any TranscriptCleanupService
 
     init(
         recordingStore: RecordingStore,
         historyStore: TranscriptHistoryStore,
-        openRouterService: OpenRouterService
+        openRouterService: any RecordingTranscriptionService,
+        cleanupService: any TranscriptCleanupService = OpenRouterService()
     ) {
         self.recordingStore = recordingStore
         self.historyStore = historyStore
         self.openRouterService = openRouterService
+        self.cleanupService = cleanupService
     }
 
     func process(
         sessionID: UUID,
         apiKey: String,
         preferredTranscript: String? = nil,
-        lastResortTranscript: String? = nil,
         onProgress: (RecordingProcessingProgress) -> Void
     ) async throws -> ProcessedRecording {
+        try Task.checkCancellation()
         let session = try recordingStore.load(sessionID)
         let finalTranscript: String
 
-        if let cachedFinal = recordingStore.finalTranscript(
+        if (session.transcriptSource != "live" || session.canUseLiveTranscript),
+           let cachedFinal = recordingStore.finalTranscript(
             sessionID: sessionID
         ) {
             finalTranscript = cachedFinal
@@ -62,10 +87,23 @@ final class RecordingProcessor {
                 session: session,
                 apiKey: apiKey,
                 preferredTranscript: preferredTranscript,
-                lastResortTranscript: lastResortTranscript,
                 onProgress: onProgress
             )
-            finalTranscript = draftTranscript
+            try Task.checkCancellation()
+            if let cleanup = session.cleanup {
+                onProgress(RecordingProcessingProgress(
+                    stage: .cleaningUp, currentPart: 1, totalParts: 1,
+                    transcriptPreview: draftTranscript
+                ))
+                let cleaned = try await cleanupService.cleanUp(
+                    apiKey: apiKey, transcript: draftTranscript, configuration: cleanup
+                )
+                try Task.checkCancellation()
+                guard let text = normalized(cleaned) else { throw OpenRouterServiceError.emptyTranscript }
+                finalTranscript = text
+            } else {
+                finalTranscript = draftTranscript
+            }
 
             try recordingStore.saveFinalTranscript(
                 finalTranscript,
@@ -74,61 +112,65 @@ final class RecordingProcessor {
         }
 
         try Task.checkCancellation()
-        let historyItem = try historyStore.archive(
-            session: session,
+        let historyItem = try await historyStore.archive(
+            session: recordingStore.load(sessionID),
             recordingDirectory: recordingStore.directoryURL(for: session.id),
             text: finalTranscript
         )
+        try Task.checkCancellation()
         try recordingStore.markCompleted(
             sessionID,
             transcriptID: historyItem.id
         )
         try recordingStore.deleteSession(sessionID)
 
-        return ProcessedRecording(transcript: finalTranscript)
+        // A capture gap cannot be repaired by retrying transcription. Deliver the saved
+        // words and retain the interruption metadata with all source audio in history.
+        return ProcessedRecording(
+            transcript: finalTranscript,
+            captureWarning: session.savedCaptureContinuous == false
+                ? "Transcript saved. The microphone changed or stopped during recording; words spoken during the interruption may be missing."
+                : nil
+        )
     }
 
     private func resolveDraft(
         session: RecordingSession,
         apiKey: String,
         preferredTranscript: String?,
-        lastResortTranscript: String?,
         onProgress: (RecordingProcessingProgress) -> Void
     ) async throws -> String {
-        if let preferredTranscript = normalized(preferredTranscript) {
+        if session.requiresFreshTranscription != true,
+           session.canUseLiveTranscript,
+           session.savedCaptureContinuous != false,
+           let preferredTranscript = normalized(preferredTranscript) {
             try recordingStore.saveDraftTranscript(
                 preferredTranscript,
                 sessionID: session.id
             )
+            try recordingStore.setTranscriptSource("live", for: session.id)
             return preferredTranscript
         }
 
-        if let cachedDraft = recordingStore.draftTranscript(
+        if (session.transcriptSource != "live" || session.canUseLiveTranscript),
+           let cachedDraft = recordingStore.draftTranscript(
             sessionID: session.id
         ) {
             return cachedDraft
         }
 
-        let draftTranscript: String
-        do {
-            draftTranscript = try await transcribe(
-                session: session,
-                apiKey: apiKey,
-                onProgress: onProgress
-            )
-        } catch OpenRouterServiceError.noSpeechDetected {
-            guard let lastResortTranscript = normalized(
-                lastResortTranscript
-            ) else {
-                throw OpenRouterServiceError.noSpeechDetected
-            }
-            draftTranscript = lastResortTranscript
-        }
+        let draftTranscript = try await transcribe(
+            session: session,
+            apiKey: apiKey,
+            onProgress: onProgress
+        )
+        try Task.checkCancellation()
 
         try recordingStore.saveDraftTranscript(
             draftTranscript,
             sessionID: session.id
         )
+        try recordingStore.setTranscriptSource("saved-audio", for: session.id)
         return draftTranscript
     }
 
@@ -145,6 +187,7 @@ final class RecordingProcessor {
     ) async throws -> String {
         let chunks = try recordingStore.audioChunks(for: session)
         let context = await transcriptionContext(for: session)
+        try Task.checkCancellation()
         var transcriptParts: [String] = []
 
         for (index, item) in chunks.enumerated() {
@@ -160,38 +203,46 @@ final class RecordingProcessor {
             )
 
             let rawTranscript: String?
-            if recordingStore.chunkHadNoSpeech(
-                sessionID: session.id,
-                chunkID: item.0.id
-            ) {
-                rawTranscript = nil
-            } else if let cached = recordingStore.cachedTranscript(
+            if let cached = recordingStore.cachedTranscript(
                 sessionID: session.id,
                 chunkID: item.0.id,
                 cleaned: false
             ) {
                 rawTranscript = cached
             } else {
-                do {
-                    let transcript = try await openRouterService.transcribe(
-                        apiKey: apiKey,
-                        model: session.resolvedTranscriptionModel,
-                        transcriptionContext: context,
-                        audio: item.1
-                    )
-                    try recordingStore.saveTranscript(
-                        transcript,
-                        sessionID: session.id,
-                        chunkID: item.0.id,
-                        cleaned: false
-                    )
-                    rawTranscript = transcript
-                } catch OpenRouterServiceError.noSpeechDetected {
-                    try recordingStore.markChunkAsNoSpeech(
-                        sessionID: session.id,
-                        chunkID: item.0.id
-                    )
+                let signal = await Self.inspectAudioSignal(item.1.fileURL)
+                try Task.checkCancellation()
+                if signal == .empty && session.savedCaptureContinuous == false {
+                    continue
+                }
+                let isSilent = signal == .silence
+                if isSilent && session.requiresFreshTranscription != true {
                     rawTranscript = nil
+                } else {
+                    do {
+                        let transcript = try await openRouterService.transcribe(
+                            apiKey: apiKey,
+                            model: session.resolvedTranscriptionModel,
+                            transcriptionContext: context,
+                            audio: item.1
+                        )
+                        try Task.checkCancellation()
+                        try recordingStore.saveTranscript(
+                            transcript,
+                            sessionID: session.id,
+                            chunkID: item.0.id,
+                            cleaned: false
+                        )
+                        rawTranscript = transcript
+                    } catch OpenRouterServiceError.emptyTranscript where isSilent {
+                        try Task.checkCancellation()
+                        rawTranscript = nil
+                    }
+                }
+                if rawTranscript == nil {
+                    try recordingStore.markChunkAsNoSpeech(
+                        sessionID: session.id, chunkID: item.0.id
+                    )
                 }
             }
 
@@ -220,6 +271,9 @@ final class RecordingProcessor {
             .joined(separator: "\n\n")
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !finalTranscript.isEmpty else {
+            guard session.savedCaptureContinuous != false else {
+                throw RecordingProcessingError.incompleteSavedCapture
+            }
             throw OpenRouterServiceError.noSpeechDetected
         }
         return finalTranscript
@@ -230,17 +284,63 @@ final class RecordingProcessor {
         if let configuredContext = session.resolvedTranscriptionContext {
             contextParts.append(configuredContext)
         }
+        if let vocabulary = session.vocabulary, !vocabulary.isEmpty {
+            contextParts.append(
+                "Personal vocabulary:\n" +
+                vocabulary.joined(separator: ", ")
+            )
+        }
 
         let screenshotURL = recordingStore.screenshotURL(for: session)
         if let visibleText = await ScreenshotContextExtractor.extractText(
             from: screenshotURL
         ) {
             contextParts.append(
-                "Visible text extracted locally from the attached app screenshot. Use it only to disambiguate words in the audio:\n\(visibleText)"
+                "Screenshot text:\n\(visibleText)"
             )
         }
 
         let context = contextParts.joined(separator: "\n\n")
         return context.isEmpty ? nil : context
+    }
+
+    // Only near-digital silence is conclusive. Background noise, unreadable
+    // audio and empty provider responses remain recoverable recordings.
+    private enum AudioSignal {
+        case silence
+        case empty
+        case audibleOrUnverified
+    }
+
+    private static func inspectAudioSignal(_ url: URL) async -> AudioSignal {
+        let inspection = Task.detached(priority: .utility) {
+            do {
+                let file = try AVAudioFile(forReading: url)
+                guard file.length > 0 else { return AudioSignal.empty }
+                guard let buffer = AVAudioPCMBuffer(
+                        pcmFormat: file.processingFormat, frameCapacity: 8_192
+                      ) else { return AudioSignal.audibleOrUnverified }
+                while file.framePosition < file.length {
+                    try Task.checkCancellation()
+                    try file.read(into: buffer)
+                    guard buffer.frameLength > 0,
+                          let channels = buffer.floatChannelData else { return AudioSignal.audibleOrUnverified }
+                    for channel in 0..<Int(buffer.format.channelCount) {
+                        for frame in 0..<Int(buffer.frameLength) {
+                            let sample = channels[channel][frame]
+                            guard sample.isFinite, abs(sample) <= 0.00001 else { return AudioSignal.audibleOrUnverified }
+                        }
+                    }
+                }
+                return AudioSignal.silence
+            } catch {
+                return AudioSignal.audibleOrUnverified
+            }
+        }
+        return await withTaskCancellationHandler {
+            await inspection.value
+        } onCancel: {
+            inspection.cancel()
+        }
     }
 }

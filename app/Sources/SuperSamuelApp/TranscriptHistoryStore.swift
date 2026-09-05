@@ -4,10 +4,12 @@ struct TranscriptHistoryItem: Codable, Identifiable {
     let id: UUID
     let createdAt: Date
     let text: String
+    var savedCaptureContinuous: Bool?
 }
 
 enum TranscriptWorkflow: String, Codable, Equatable {
     case transcriptionOnly = "transcription-only"
+    case transcriptionThenCleanup = "transcription-then-cleanup"
     // Retained so metadata archived by older app versions still decodes.
     case whisperOnly = "whisper-only"
     case whisperThenTextLLM = "whisper-then-text-llm"
@@ -19,6 +21,12 @@ struct TranscriptWorkflowMetadata: Codable {
     let transcriptionModel: String?
     let transcriptionContext: String?
     let usedScreenshotContext: Bool
+    var vocabulary: [String]?
+    var liveTranscriptionModel: String?
+    var liveTranscriptionDelay: String?
+    var transcriptSource: String?
+    var savedAudioTranscriptionModel: String?
+    var cleanup: TranscriptCleanupConfiguration?
 }
 
 struct TranscriptAudioMetadata: Codable {
@@ -29,6 +37,7 @@ struct TranscriptAudioMetadata: Codable {
     let sizeBytes: Int64?
     let format: String
     let mimeType: String
+    var inputDevice: AudioInputDeviceInfo?
 }
 
 struct TranscriptHistoryMetadata: Codable {
@@ -45,14 +54,101 @@ struct TranscriptHistoryMetadata: Codable {
     let appVersion: String?
     let appBuild: String?
     let operatingSystem: String
+    var liveCaptureContinuous: Bool?
+    var savedCaptureContinuous: Bool?
 }
 
 @MainActor
 final class TranscriptHistoryStore {
+    private let files: TranscriptHistoryFiles
+    private let background: TranscriptHistoryBackground
+
+    init(fileManager: FileManager = .default, rootDirectory: URL? = nil) {
+        files = TranscriptHistoryFiles(fileManager: fileManager, rootDirectory: rootDirectory)
+        background = TranscriptHistoryBackground(fileManager: fileManager, rootDirectory: rootDirectory)
+    }
+
+    func archive(
+        session: RecordingSession,
+        recordingDirectory: URL,
+        text: String,
+        completedAt: Date = Date()
+    ) async throws -> TranscriptHistoryItem {
+        try await background.archive(
+            session: session, recordingDirectory: recordingDirectory,
+            text: text, completedAt: completedAt
+        )
+    }
+
+    func recent(limit: Int = 30) async throws -> [TranscriptHistoryItem] {
+        try await background.recent(limit: limit)
+    }
+
+    func clear() async throws { try await background.clear() }
+
+    func save(recordingID: UUID, createdAt: Date, text: String) async throws -> TranscriptHistoryItem {
+        try await background.save(recordingID: recordingID, createdAt: createdAt, text: text)
+    }
+
+    func item(id: UUID) throws -> TranscriptHistoryItem? { try files.item(id: id) }
+    func metadata(id: UUID) throws -> TranscriptHistoryMetadata? { try files.metadata(id: id) }
+    func artifactURL(for id: UUID) -> URL? { files.artifactURL(for: id) }
+}
+
+// The actor serializes archive publication, deletion and listing on a background
+// executor. Directory timestamps catch external additions and removals without
+// decoding the archive again on every menu opening.
+private actor TranscriptHistoryBackground {
+    private let files: TranscriptHistoryFiles
+    private var cachedItems: [TranscriptHistoryItem]?
+    private var cachedDirectoryModification: Date?
+
+    init(fileManager: FileManager, rootDirectory: URL?) {
+        files = TranscriptHistoryFiles(fileManager: fileManager, rootDirectory: rootDirectory)
+    }
+
+    func archive(
+        session: RecordingSession, recordingDirectory: URL,
+        text: String, completedAt: Date
+    ) throws -> TranscriptHistoryItem {
+        let item = try files.archive(
+            session: session, recordingDirectory: recordingDirectory,
+            text: text, completedAt: completedAt
+        )
+        cachedItems = nil
+        return item
+    }
+
+    func recent(limit: Int) throws -> [TranscriptHistoryItem] {
+        if cachedItems == nil || cachedDirectoryModification != files.directoryModificationDate() {
+            cachedItems = try files.recent(limit: .max)
+            cachedDirectoryModification = files.directoryModificationDate()
+        }
+        return Array((cachedItems ?? []).prefix(max(0, limit)))
+    }
+
+    func clear() throws {
+        try files.clear()
+        cachedItems = []
+        cachedDirectoryModification = files.directoryModificationDate()
+    }
+
+    func save(recordingID: UUID, createdAt: Date, text: String) throws -> TranscriptHistoryItem {
+        let item = try files.save(recordingID: recordingID, createdAt: createdAt, text: text)
+        cachedItems = nil
+        return item
+    }
+}
+
+private final class TranscriptHistoryFiles {
     private let fileManager: FileManager
     private let historyDirectory: URL
     private let encoder: JSONEncoder
     private let decoder: JSONDecoder
+
+    func directoryModificationDate() -> Date? {
+        (try? fileManager.attributesOfItem(atPath: historyDirectory.path)[.modificationDate]) as? Date
+    }
 
     init(fileManager: FileManager = .default, rootDirectory: URL? = nil) {
         self.fileManager = fileManager
@@ -86,13 +182,8 @@ final class TranscriptHistoryStore {
         text: String,
         completedAt: Date = Date()
     ) throws -> TranscriptHistoryItem {
+        try Task.checkCancellation()
         try ensureDirectory()
-
-        if let existing = try item(id: session.id),
-           fileManager.fileExists(atPath: directoryURL(for: session.id).path)
-        {
-            return existing
-        }
 
         let destination = directoryURL(for: session.id)
         let staging = historyDirectory.appendingPathComponent(
@@ -130,6 +221,7 @@ final class TranscriptHistoryStore {
             options: .atomic
         )
 
+        try Task.checkCancellation()
         if fileManager.fileExists(atPath: destination.path) {
             try fileManager.removeItem(at: destination)
         }
@@ -142,7 +234,8 @@ final class TranscriptHistoryStore {
         return TranscriptHistoryItem(
             id: metadata.id,
             createdAt: metadata.createdAt,
-            text: metadata.text
+            text: metadata.text,
+            savedCaptureContinuous: metadata.savedCaptureContinuous
         )
     }
 
@@ -257,7 +350,8 @@ final class TranscriptHistoryStore {
         return TranscriptHistoryItem(
             id: metadata.id,
             createdAt: metadata.createdAt,
-            text: metadata.text
+            text: metadata.text,
+            savedCaptureContinuous: metadata.savedCaptureContinuous
         )
     }
 
@@ -276,7 +370,8 @@ final class TranscriptHistoryStore {
                 durationSeconds: chunk.duration,
                 sizeBytes: chunk.sizeBytes,
                 format: fileExtension,
-                mimeType: fileExtension == "wav" ? "audio/wav" : "audio/mp4"
+                mimeType: fileExtension == "wav" ? "audio/wav" : "audio/mp4",
+                inputDevice: chunk.inputDevice
             )
         }
         let info = Bundle.main.infoDictionary
@@ -289,17 +384,26 @@ final class TranscriptHistoryStore {
             text: text,
             transcriptFilename: "transcript.txt",
             workflow: TranscriptWorkflowMetadata(
-                workflow: .transcriptionOnly,
-                transcriptionModel: session.resolvedTranscriptionModel,
+                workflow: session.cleanup == nil ? .transcriptionOnly : .transcriptionThenCleanup,
+                transcriptionModel: session.transcriptSource == "live"
+                    ? session.liveTranscriptionModel : session.resolvedTranscriptionModel,
                 transcriptionContext: session.resolvedTranscriptionContext,
-                usedScreenshotContext: session.screenshotFilename != nil
+                usedScreenshotContext: session.screenshotFilename != nil,
+                vocabulary: session.vocabulary,
+                liveTranscriptionModel: session.liveTranscriptionModel,
+                liveTranscriptionDelay: session.liveTranscriptionDelay,
+                transcriptSource: session.transcriptSource,
+                savedAudioTranscriptionModel: session.resolvedTranscriptionModel,
+                cleanup: session.cleanup
             ),
             audio: audio,
             inputDevice: session.inputDevice,
             screenshotFilename: session.screenshotFilename,
             appVersion: info?["CFBundleShortVersionString"] as? String,
             appBuild: info?["CFBundleVersion"] as? String,
-            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString
+            operatingSystem: ProcessInfo.processInfo.operatingSystemVersionString,
+            liveCaptureContinuous: session.liveCaptureContinuous,
+            savedCaptureContinuous: session.savedCaptureContinuous
         )
     }
 

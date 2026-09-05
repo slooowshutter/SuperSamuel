@@ -10,16 +10,17 @@ private struct DeliveryOptions {
 @MainActor
 final class DictationController {
     private let appState = AppState()
-    private let settings = SettingsStore()
+    private let settings: SettingsStore
     private let permissions = PermissionsService()
     private let hotkeyService = HotkeyService()
-    private let audioCapture = AudioCaptureService()
+    private let audioCapture: AudioCaptureService
     private let realtimeAudioCapture = RealtimeAudioCaptureService()
     private let clipboard = ClipboardService()
     private let openRouterService = OpenRouterService()
     private let screenshotCapture = ScreenshotCaptureService()
-    private let recordingStore = RecordingStore()
-    private let historyStore = TranscriptHistoryStore()
+    private let recordingStore: RecordingStore
+    private let microphonePermission: (() async throws -> Void)?
+    private let historyStore: TranscriptHistoryStore
     private lazy var textInsertion = TextInsertionService(clipboard: clipboard)
     private lazy var recordingProcessor = RecordingProcessor(
         recordingStore: recordingStore,
@@ -42,6 +43,21 @@ final class DictationController {
     private var activeInputDevice: AudioInputDeviceInfo?
     private var realtimeSession: RealtimeTranscriptionService?
     private var realtimeStartTask: Task<Void, Never>?
+    private var liveContextAttachmentID: UUID?
+    private var recordingConfiguration: RecordingConfiguration?
+    private var liveCaptureContinuous = true
+    private var savedCaptureContinuous = true
+    private var liveAudioDuration: TimeInterval = 0
+    private var nextMicrophoneRecoveryAt = Date.distantPast
+    private var persistentMenuRefreshTask: Task<Void, Never>?
+
+    private struct RecordingConfiguration {
+        let model: String
+        let context: String
+        let vocabulary: [String]
+        let delay: TranscriptionDelay
+        let cleanup: TranscriptCleanupConfiguration?
+    }
 
     private var processingTask: Task<Void, Never>?
     private var processingSessionID: UUID?
@@ -50,10 +66,23 @@ final class DictationController {
     private var isRecoveryPromptVisible = false
     private var recoverySessionID: UUID?
 
+    init(
+        settings: SettingsStore? = nil,
+        recordingStore: RecordingStore? = nil,
+        historyStore: TranscriptHistoryStore? = nil,
+        audioCapture: AudioCaptureService? = nil,
+        microphonePermission: (() async throws -> Void)? = nil
+    ) {
+        self.settings = settings ?? SettingsStore()
+        self.recordingStore = recordingStore ?? RecordingStore()
+        self.historyStore = historyStore ?? TranscriptHistoryStore()
+        self.audioCapture = audioCapture ?? AudioCaptureService()
+        self.microphonePermission = microphonePermission
+    }
+
     func start() {
         configureOverlay()
         configureMenuBar()
-        removeRecordingCopiesAlreadyInHistory()
         try? recordingStore.recoverInterruptedSessions()
 
         if !hotkeyService.start(onTrigger: { [weak self] in
@@ -121,6 +150,10 @@ final class DictationController {
     }
 
     private func handleOverlayPrimaryAction() {
+        if appState.phase == .idle {
+            resetToIdle()
+            return
+        }
         if case .error = appState.phase {
             resetToIdle()
             return
@@ -161,7 +194,7 @@ final class DictationController {
         }
         menuBarController.onDeletePendingRecording = { [weak self] id in
             Task { @MainActor [weak self] in
-                self?.confirmAndDeletePendingRecording(id)
+                self?.deletePendingRecording(id)
             }
         }
         menuBarController.onRevealPendingRecording = { [weak self] id in
@@ -190,11 +223,7 @@ final class DictationController {
     private func toggleRecording() {
         switch appState.phase {
         case .idle, .error:
-            if hasPendingRecordings() {
-                presentOldestPendingRecording()
-            } else {
-                Task { await startRecording() }
-            }
+            Task { await startRecording() }
         case .recording:
             stopAndProcessRecording()
         case .transcribing:
@@ -202,17 +231,12 @@ final class DictationController {
         }
     }
 
-    private func startRecording() async {
+    func startRecording() async {
         guard
             !isStartingRecording,
             activeRecordingID == nil,
             processingTask == nil
         else {
-            return
-        }
-
-        if hasPendingRecordings() {
-            presentOldestPendingRecording()
             return
         }
 
@@ -227,13 +251,35 @@ final class DictationController {
             }
 
             targetApplication = NSWorkspace.shared.frontmostApplication
-            try await permissions.ensureMicrophonePermission()
+            if let microphonePermission {
+                try await microphonePermission()
+            } else {
+                try await permissions.ensureMicrophonePermission()
+            }
+            guard !Task.isCancelled, activeRecordingID == nil, processingTask == nil else { return }
 
             clearAttachedScreenshot()
 
+            let configuration = RecordingConfiguration(
+                model: settings.transcriptionModel,
+                context: "",
+                vocabulary: settings.personalDictionary,
+                delay: settings.transcriptionDelay,
+                cleanup: settings.cleanupConfiguration
+            )
+            recordingConfiguration = configuration
+            liveCaptureContinuous = true
+            savedCaptureContinuous = true
+            liveAudioDuration = 0
             let session = try recordingStore.createSession(
-                transcriptionModel: settings.transcriptionModel,
-                transcriptionContext: settings.transcriptionContext
+                transcriptionModel: configuration.model,
+                transcriptionContext: configuration.context,
+                vocabulary: configuration.vocabulary,
+                liveTranscriptionModel: settings.canUseRealtimeGPTTranscribe
+                    ? RealtimeTranscriptionService.transcriptionModel : nil,
+                liveTranscriptionDelay: settings.canUseRealtimeGPTTranscribe
+                    ? configuration.delay.rawValue : nil,
+                cleanup: configuration.cleanup
             )
             let chunkURL = try recordingStore.beginChunk(in: session.id)
 
@@ -246,15 +292,18 @@ final class DictationController {
                 activeInputDevice = inputDevice
             } catch {
                 _ = audioCapture.stopIfNeeded()
-                try? recordingStore.deleteSession(session.id)
+                try? recordingStore.finishCurrentChunk(in: session.id, duration: audioCapture.recordedDuration)
+                try? recordingStore.markFailed(session.id, message: error.localizedDescription)
                 refreshPersistentMenus()
                 throw error
             }
 
+            recoverySessionID = nil
             activeRecordingID = session.id
             startedAt = Date()
             hasDetectedMicrophoneSignal = false
             isShowingMicrophoneWarning = false
+            nextMicrophoneRecoveryAt = .distantPast
             startElapsedTimer()
             appState.resetForRecording(
                 deviceName: activeInputDevice?.name ??
@@ -268,23 +317,42 @@ final class DictationController {
         }
     }
 
-    private func stopAndProcessRecording() {
+    func stopAndProcessRecording() {
         guard let sessionID = activeRecordingID else {
             return
         }
 
+        if case .interrupted(let message) = audioCapture.checkHealth() {
+            savedCaptureContinuous = false
+            appState.captureStatusMessage = message
+        }
+        if let attachment = appState.attachedScreenshot,
+           liveContextAttachmentID != attachment.id {
+            liveCaptureContinuous = false
+        }
         let realtimeSession = detachActiveRealtimeSession()
         let pasteTarget = currentPasteTarget()
         do {
             try finishCurrentChunk(sessionID: sessionID)
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                transcriptionModel: settings.transcriptionModel,
-                transcriptionContext: settings.transcriptionContext,
+                transcriptionModel: recordingConfiguration?.model ?? settings.transcriptionModel,
+                transcriptionContext: recordingConfiguration?.context ?? "",
+                vocabulary: recordingConfiguration?.vocabulary ?? settings.personalDictionary,
+                cleanup: recordingConfiguration == nil ? settings.cleanupConfiguration : recordingConfiguration?.cleanup,
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
         } catch {
             realtimeSession?.cancel()
+            if case AudioCaptureError.emptyRecording = error,
+               savedCaptureContinuous,
+               let startedAt, Date().timeIntervalSince(startedAt) < 0.15 {
+                try? recordingStore.markReady(sessionID, message: "Recording was too short. The saved audio was kept.")
+                activeRecordingID = nil
+                resetToIdle()
+                refreshPersistentMenus()
+                return
+            }
             try? recordingStore.markFailed(
                 sessionID,
                 message: error.localizedDescription
@@ -318,12 +386,25 @@ final class DictationController {
     }
 
     private func finishCurrentChunk(sessionID: UUID) throws {
-        let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
-        _ = try audioCapture.stop()
-        try recordingStore.finishCurrentChunk(
-            in: sessionID,
-            duration: duration
+        var stopError: Error?
+        if audioCapture.hasActiveRecording {
+            do { _ = try audioCapture.stop() } catch { stopError = error }
+            try recordingStore.finishCurrentChunk(
+                in: sessionID,
+                duration: audioCapture.recordedDuration
+            )
+        }
+        // Allow AAC priming and one capture buffer of scheduling skew. Larger gaps
+        // include a slow sidecar startup or missed PCM, even if the engine recovered.
+        if audioCapture.recordedDuration - liveAudioDuration > 0.15 {
+            liveCaptureContinuous = false
+        }
+        try recordingStore.setCaptureContinuity(
+            live: liveCaptureContinuous,
+            saved: savedCaptureContinuous,
+            for: sessionID
         )
+        if let stopError { throw stopError }
     }
 
     private func startRealtimeTranscriptionIfAvailable(sessionID: UUID) {
@@ -335,7 +416,7 @@ final class DictationController {
                 "Live transcription needs a separate OpenAI API key in Settings. Recording locally..."
             )
             return
-        case .disabled, .unsupportedModel:
+        case .disabled:
             return
         }
 
@@ -353,18 +434,25 @@ final class DictationController {
         realtimeSession = service
         appState.setProgressMessage("Listening for live transcription...")
 
+        realtimeAudioCapture.onDiscontinuity = { [weak self] message in
+            Task { @MainActor [weak self] in
+                guard let self, self.activeRecordingID == sessionID else { return }
+                self.liveCaptureContinuous = false
+                self.appState.captureStatusMessage = "Live audio interrupted. The saved recording will be transcribed. \(message)"
+            }
+        }
         do {
             try realtimeAudioCapture.start { [weak self] data in
-                DispatchQueue.main.async { [weak self] in
-                    guard self?.activeRecordingID == sessionID else {
-                        return
-                    }
-                    self?.realtimeSession?.appendAudio(data)
-                }
+                guard let self, self.activeRecordingID == sessionID else { return }
+                self.liveAudioDuration += Double(data.count) / (24_000 * 2)
+                self.realtimeSession?.appendAudio(data)
             }
         } catch {
             realtimeSession = nil
+            liveCaptureContinuous = false
             service.cancel()
+            appState.captureStatusMessage = "Live audio unavailable. The saved recording will be used. \(error.localizedDescription)"
+            appState.setProgressMessage("Recording locally...")
             print(
                 "Realtime audio sidecar unavailable; recording locally: " +
                     error.localizedDescription
@@ -373,7 +461,10 @@ final class DictationController {
         }
 
         let apiKey = settings.openAIAPIKey
-        let context = settings.transcriptionContext
+        let context = recordingConfiguration?.context ?? ""
+        let delay = recordingConfiguration?.delay ?? settings.transcriptionDelay
+        let keywords = recordingConfiguration?.vocabulary ?? settings.personalDictionary
+        appState.liveInstructionsShortened = !RealtimeTranscriptionService.contextIsValid(context)
         realtimeStartTask = Task { @MainActor [weak self, weak service] in
             guard let service else {
                 return
@@ -381,7 +472,9 @@ final class DictationController {
             do {
                 try await service.start(
                     apiKey: apiKey,
-                    transcriptionContext: context
+                    transcriptionContext: context,
+                    delay: delay,
+                    keywords: keywords
                 )
             } catch {
                 service.cancel()
@@ -392,6 +485,8 @@ final class DictationController {
                 self.realtimeSession = nil
                 self.realtimeStartTask = nil
                 if self.activeRecordingID == sessionID {
+                    self.liveCaptureContinuous = false
+                    self.appState.captureStatusMessage = "Live transcription unavailable. The saved recording will be used. \(error.localizedDescription)"
                     self.appState.setProgressMessage("Recording locally...")
                 }
                 print(
@@ -404,6 +499,7 @@ final class DictationController {
 
     private func detachActiveRealtimeSession() -> RealtimeTranscriptionService? {
         realtimeAudioCapture.stop()
+        liveCaptureContinuous = liveCaptureContinuous && !realtimeAudioCapture.hasDiscontinuity
         let service = realtimeSession
         realtimeSession = nil
         realtimeStartTask = nil
@@ -426,7 +522,7 @@ final class DictationController {
 
         cancelActiveRealtimeTranscription()
 
-        if audioCapture.isRecording {
+        if audioCapture.hasActiveRecording {
             do {
                 try finishCurrentChunk(sessionID: sessionID)
             } catch {
@@ -437,8 +533,10 @@ final class DictationController {
         do {
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                transcriptionModel: settings.transcriptionModel,
-                transcriptionContext: settings.transcriptionContext,
+                transcriptionModel: recordingConfiguration?.model ?? settings.transcriptionModel,
+                transcriptionContext: recordingConfiguration?.context ?? "",
+                vocabulary: recordingConfiguration?.vocabulary ?? settings.personalDictionary,
+                cleanup: recordingConfiguration == nil ? settings.cleanupConfiguration : recordingConfiguration?.cleanup,
                 screenshotSourceURL: appState.attachedScreenshot?.fileURL
             )
             try recordingStore.markFailed(sessionID, message: message)
@@ -502,17 +600,27 @@ final class DictationController {
     ) async {
         do {
             var realtimeTranscript: String?
-            var lastResortRealtimeTranscript: String?
-            if let realtimeSession {
+            let savedSession = try recordingStore.load(sessionID)
+            if let realtimeSession,
+               !savedSession.canUseLiveTranscript || savedSession.savedCaptureContinuous == false {
+                try? recordingStore.saveLivePartialTranscript(realtimeSession.currentTranscript, sessionID: sessionID)
+                realtimeSession.cancel()
+                appState.setProgressMessage(savedSession.livePreviewRequiresFinalization == true
+                    ? "Applying your full instructions to the saved recording..."
+                    : "Transcribing the saved recording...")
+            } else if let realtimeSession {
                 appState.setProgressMessage("Finishing live transcript...")
                 do {
-                    realtimeTranscript = try await realtimeSession.finish()
+                    let finishedTranscript = try await realtimeSession.finish()
+                    let session = try recordingStore.load(sessionID)
+                    if session.canUseLiveTranscript {
+                        realtimeTranscript = finishedTranscript
+                    }
                 } catch is CancellationError {
                     realtimeSession.cancel()
                     throw CancellationError()
                 } catch {
-                    lastResortRealtimeTranscript = realtimeSession
-                        .currentTranscript
+                    try? recordingStore.saveLivePartialTranscript(realtimeSession.currentTranscript, sessionID: sessionID)
                     realtimeSession.cancel()
                     print(
                         "Realtime transcription unavailable; using saved recording: " +
@@ -527,9 +635,9 @@ final class DictationController {
             let result = try await recordingProcessor.process(
                 sessionID: sessionID,
                 apiKey: settings.openRouterAPIKey,
-                preferredTranscript: realtimeTranscript,
-                lastResortTranscript: lastResortRealtimeTranscript
+                preferredTranscript: realtimeTranscript
             ) { [weak self] progress in
+                guard self?.isCurrentOperation(operationID) == true else { return }
                 self?.showProcessingProgress(progress)
             }
 
@@ -540,6 +648,7 @@ final class DictationController {
 
             completeOperation(
                 transcript: result.transcript,
+                captureWarning: result.captureWarning,
                 delivery: delivery
             )
         } catch {
@@ -548,7 +657,14 @@ final class DictationController {
             }
 
             let message: String
-            if isCancellation(error) {
+            if case OpenRouterServiceError.noSpeechDetected = error {
+                try? recordingStore.markReady(
+                    sessionID,
+                    message: "No speech detected. The saved audio remains available."
+                )
+                resetToIdle()
+                appState.setProgressMessage("No speech detected. Ready to record.")
+            } else if isCancellation(error) {
                 message = "Processing cancelled. The recording was kept."
                 try? recordingStore.markReady(sessionID, message: message)
                 resetToIdle()
@@ -570,8 +686,10 @@ final class DictationController {
         _ progress: RecordingProcessingProgress
     ) {
         appState.setPhase(.transcribing)
+        appState.processingStatusMessage = progress.stage == .cleaningUp ? "Cleaning up transcript..." : "Transcribing"
         appState.setProgressMessage(
-            "Transcribing part \(progress.currentPart) of \(progress.totalParts)..."
+            progress.stage == .cleaningUp ? "Cleaning up transcript..."
+                : "Transcribing part \(progress.currentPart) of \(progress.totalParts)..."
         )
         if !progress.transcriptPreview.isEmpty {
             appState.setTranscriptPreview(fullText: progress.transcriptPreview)
@@ -581,6 +699,7 @@ final class DictationController {
 
     private func completeOperation(
         transcript: String,
+        captureWarning: String?,
         delivery: DeliveryOptions
     ) {
         activeOperationID = nil
@@ -589,7 +708,8 @@ final class DictationController {
         targetApplication = nil
         lastTranscript = transcript
         appState.setTranscriptPreview(fullText: transcript)
-        overlayController?.hide()
+        appState.captureStatusMessage = captureWarning
+        appState.showsRecoveryActions = false
 
         let canAutoPaste = delivery.autoPaste &&
             permissions.hasAccessibilityPermission(prompt: false)
@@ -602,6 +722,11 @@ final class DictationController {
 
         appState.setPhase(.idle)
         appState.setElapsed(seconds: 0)
+        if captureWarning != nil {
+            overlayController?.show()
+        } else {
+            overlayController?.hide()
+        }
         menuBarController?.updateStatusTitle(for: .idle)
         refreshPersistentMenus()
     }
@@ -639,24 +764,29 @@ final class DictationController {
         guard let recoverySessionID else {
             return
         }
-        confirmAndDeletePendingRecording(recoverySessionID)
+        deletePendingRecording(recoverySessionID)
     }
 
     private func sendPendingRecording(
         _ sessionID: UUID,
         targetApplication: NSRunningApplication? = nil
     ) {
-        guard appState.phase == .idle || isErrorPhase else {
+        guard !isStartingRecording, appState.phase == .idle || isErrorPhase else {
             return
         }
 
         errorResetTask?.cancel()
         resetToIdle()
         do {
+            let saved = try recordingStore.load(sessionID)
+            let resumesCleanup = saved.cleanup != nil && recordingStore.draftTranscript(sessionID: sessionID) != nil
             try recordingStore.prepareForProcessing(
                 sessionID: sessionID,
-                transcriptionModel: settings.transcriptionModel,
-                transcriptionContext: settings.transcriptionContext,
+                transcriptionModel: resumesCleanup ? saved.resolvedTranscriptionModel : settings.transcriptionModel,
+                transcriptionContext: resumesCleanup ? (saved.resolvedTranscriptionContext ?? "") : "",
+                vocabulary: resumesCleanup ? (saved.vocabulary ?? []) : settings.personalDictionary,
+                forceRetranscription: !resumesCleanup,
+                cleanup: settings.cleanupConfiguration,
                 screenshotSourceURL: nil
             )
         } catch {
@@ -673,31 +803,23 @@ final class DictationController {
         )
     }
 
-    private func confirmAndDeletePendingRecording(_ sessionID: UUID) {
-        guard processingSessionID != sessionID else {
-            return
-        }
-
-        let alert = NSAlert()
-        alert.messageText = "Move this saved recording to Trash?"
-        alert.informativeText =
-            "The audio and any cached partial transcript can be recovered from Trash until it is emptied."
-        alert.alertStyle = .warning
-        alert.addButton(withTitle: "Move to Trash")
-        alert.addButton(withTitle: "Cancel")
-        alert.buttons.first?.hasDestructiveAction = true
-
-        NSApp.activate(ignoringOtherApps: true)
-        guard alert.runModal() == .alertFirstButtonReturn else {
+    private func deletePendingRecording(_ sessionID: UUID) {
+        guard processingSessionID != sessionID, activeRecordingID != sessionID else {
             return
         }
 
         do {
             try recordingStore.trashSession(sessionID)
             refreshPersistentMenus()
-            resetToIdle()
+            if recoverySessionID == sessionID, activeRecordingID == nil {
+                resetToIdle()
+            }
         } catch {
-            showError(error.localizedDescription)
+            if activeRecordingID != nil {
+                appState.captureStatusMessage = "Could not move the older recording to Trash: \(error.localizedDescription)"
+            } else {
+                showError(error.localizedDescription)
+            }
         }
     }
 
@@ -707,22 +829,10 @@ final class DictationController {
         ])
     }
 
-    private func removeRecordingCopiesAlreadyInHistory() {
-        guard let sessions = try? recordingStore.pendingSessions() else {
-            return
-        }
-
-        for session in sessions {
-            guard (try? historyStore.item(id: session.id)) != nil else {
-                continue
-            }
-            try? recordingStore.deleteSession(session.id)
-        }
-    }
-
     private func presentOldestPendingRecording() {
         guard
             !isRecoveryPromptVisible,
+            !isStartingRecording,
             activeRecordingID == nil,
             processingTask == nil
         else {
@@ -762,7 +872,7 @@ final class DictationController {
                 targetApplication: pasteTarget
             )
         case .alertThirdButtonReturn:
-            confirmAndDeletePendingRecording(recording.id)
+            deletePendingRecording(recording.id)
         default:
             break
         }
@@ -791,7 +901,7 @@ final class DictationController {
         Duration: \(duration)
         Audio: \(recording.chunkCount) saved parts, \(size)\(input)
 
-        New recordings are blocked until saved recordings are sent or deleted.\(error)
+        You can keep this recording for later and start a new one at any time.\(error)
         """
     }
 
@@ -830,41 +940,42 @@ final class DictationController {
             return
         }
 
-        do {
-            try historyStore.clear()
-            lastTranscript = ""
-            refreshPersistentMenus()
-        } catch {
-            showError(error.localizedDescription)
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                try await historyStore.clear()
+                lastTranscript = ""
+                refreshPersistentMenus()
+            } catch {
+                showError(error.localizedDescription)
+            }
         }
     }
 
     private func refreshPersistentMenus() {
-        do {
-            let pending = try recordingStore.summaries()
-            let history = try historyStore.recent()
-            let hiddenIDs = Set(
-                [activeRecordingID, processingSessionID].compactMap { $0 }
-            )
-            menuBarController?.updatePendingRecordings(
-                pending.filter { !hiddenIDs.contains($0.id) }
-            )
-            menuBarController?.updateTranscriptHistory(history)
-
-            if lastTranscript.isEmpty, let mostRecent = history.first {
-                lastTranscript = mostRecent.text
+        // Coalesce menu openings; the history store caches decoded entries and scans off-main.
+        persistentMenuRefreshTask?.cancel()
+        persistentMenuRefreshTask = Task { [weak self] in
+            guard let self else { return }
+            do {
+                let history = try await historyStore.recent()
+                try Task.checkCancellation()
+                let pending = try recordingStore.summaries()
+                let hiddenIDs = Set(
+                    [activeRecordingID, processingSessionID].compactMap { $0 }
+                )
+                menuBarController?.updatePendingRecordings(
+                    pending.filter { !hiddenIDs.contains($0.id) }
+                )
+                menuBarController?.updateTranscriptHistory(history)
+                if lastTranscript.isEmpty, let mostRecent = history.first {
+                    lastTranscript = mostRecent.text
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                print("Could not refresh saved data: \(error.localizedDescription)")
             }
-        } catch {
-            print("Could not refresh saved data: \(error.localizedDescription)")
-        }
-    }
-
-    private func hasPendingRecordings() -> Bool {
-        do {
-            return try !recordingStore.pendingSessions().isEmpty
-        } catch {
-            showError(error.localizedDescription)
-            return true
         }
     }
 
@@ -883,6 +994,9 @@ final class DictationController {
         targetApplication = nil
         activeInputDevice = nil
         appState.recordingDeviceName = nil
+        appState.captureStatusMessage = nil
+        appState.liveInstructionsShortened = false
+        recordingConfiguration = nil
         clearAttachedScreenshot()
         overlayController?.hide()
         appState.setPhase(.idle)
@@ -922,6 +1036,7 @@ final class DictationController {
                 self.appState.setElapsed(
                     seconds: Date().timeIntervalSince(startedAt)
                 )
+                self.monitorCaptureHealth()
                 let level = self.audioCapture.currentLevel()
                 self.appState.pushLevel(level)
                 self.updateMicrophoneSignalStatus(
@@ -929,6 +1044,44 @@ final class DictationController {
                     elapsed: self.appState.elapsedSeconds
                 )
             }
+        }
+    }
+
+    private func monitorCaptureHealth() {
+        guard let sessionID = activeRecordingID else { return }
+        realtimeAudioCapture.checkHealth()
+        if let message = realtimeSession?.failureMessage {
+            liveCaptureContinuous = false
+            appState.captureStatusMessage = "Live transcription stopped. The saved recording will be used. \(message)"
+        }
+
+        guard Date() >= nextMicrophoneRecoveryAt else { return }
+        let interruption: String
+        if !audioCapture.hasActiveRecording {
+            interruption = "The microphone is unavailable. Retrying capture..."
+        } else if case .interrupted(let message) = audioCapture.checkHealth() {
+            interruption = message
+        } else {
+            return
+        }
+
+        savedCaptureContinuous = false
+        liveCaptureContinuous = false
+        appState.captureStatusMessage = "\(interruption) Some audio may be missing; recorded parts will be kept."
+        try? recordingStore.setCaptureContinuity(live: false, saved: false, for: sessionID)
+        nextMicrophoneRecoveryAt = Date().addingTimeInterval(2)
+        if audioCapture.hasActiveRecording {
+            _ = audioCapture.stopIfNeeded()
+            try? recordingStore.finishCurrentChunk(in: sessionID, duration: audioCapture.recordedDuration)
+        }
+        do {
+            let url = try recordingStore.beginChunk(in: sessionID)
+            let device = try audioCapture.start(at: url)
+            try recordingStore.setInputDevice(device, for: sessionID)
+            activeInputDevice = device
+            appState.recordingDeviceName = device.name
+        } catch {
+            appState.captureStatusMessage = "Microphone capture interrupted. Recorded parts are safe. Retrying: \(error.localizedDescription)"
         }
     }
 
@@ -940,7 +1093,9 @@ final class DictationController {
             hasDetectedMicrophoneSignal = true
             if isShowingMicrophoneWarning {
                 isShowingMicrophoneWarning = false
-                appState.setProgressMessage("Recording locally...")
+                if liveCaptureContinuous && savedCaptureContinuous {
+                    appState.captureStatusMessage = nil
+                }
             }
             return
         }
@@ -954,9 +1109,9 @@ final class DictationController {
         }
 
         isShowingMicrophoneWarning = true
-        appState.setProgressMessage(
+        guard appState.captureStatusMessage == nil else { return }
+        appState.captureStatusMessage =
             "No recorded signal from \(activeInputDevice?.name ?? "the selected microphone") — check your input device."
-        )
     }
 
     private func stopElapsedTimer() {
@@ -1071,26 +1226,29 @@ final class DictationController {
                 return
             }
 
-            var contextParts = [self.settings.transcriptionContext]
+            var contextParts = [self.recordingConfiguration?.context ?? ""]
             if let visibleText {
                 contextParts.append(
-                    "Visible text extracted locally from the attached app screenshot. Use it only to disambiguate words in the audio:\n\(visibleText)"
+                    "Screenshot text:\n\(visibleText)"
                 )
             }
             self.realtimeSession?.updateTranscriptionContext(
                 contextParts.joined(separator: "\n\n")
             )
+            self.appState.liveInstructionsShortened = self.realtimeSession?.usesShortenedInstructions ?? false
+            self.liveContextAttachmentID = attachmentID
         }
     }
 
     private func clearAttachedScreenshot() {
+        liveContextAttachmentID = nil
         screenshotCapture.remove(appState.attachedScreenshot)
         appState.attachedScreenshot = nil
         appState.screenshotStatusMessage = nil
         appState.isCapturingScreenshot = false
         if activeRecordingID != nil {
             realtimeSession?.updateTranscriptionContext(
-                settings.transcriptionContext
+                recordingConfiguration?.context ?? ""
             )
         }
     }
@@ -1103,7 +1261,16 @@ final class DictationController {
         targetApplication = nil
         clearAttachedScreenshot()
         appState.setPhase(.error(message))
-        appState.setProgressMessage(message)
+        if recoverable {
+            appState.captureStatusMessage = message
+            if let id = recoverySessionID,
+               let partial = recordingStore.draftTranscript(sessionID: id)
+                    ?? recordingStore.livePartialTranscript(sessionID: id) {
+                appState.setTranscriptPreview(fullText: partial)
+            }
+        } else {
+            appState.setProgressMessage(message)
+        }
         appState.showsRecoveryActions = recoverable
         menuBarController?.updateStatusTitle(for: .error(message))
         overlayController?.show()
