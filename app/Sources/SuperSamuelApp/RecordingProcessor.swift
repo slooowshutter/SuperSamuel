@@ -11,6 +11,7 @@ enum RecordingProcessingError: LocalizedError {
 
 enum RecordingProcessingStage: Equatable {
     case transcribing
+    case cleaningUp
 }
 
 struct RecordingProcessingProgress {
@@ -34,6 +35,7 @@ struct RecordingProcessingProgress {
 
 struct ProcessedRecording {
     let transcript: String
+    let captureWarning: String?
 }
 
 protocol RecordingTranscriptionService: Sendable {
@@ -42,20 +44,27 @@ protocol RecordingTranscriptionService: Sendable {
     ) async throws -> String
 }
 
+protocol TranscriptCleanupService: Sendable {
+    func cleanUp(apiKey: String, transcript: String, configuration: TranscriptCleanupConfiguration) async throws -> String
+}
+
 @MainActor
 final class RecordingProcessor {
     private let recordingStore: RecordingStore
     private let historyStore: TranscriptHistoryStore
     private let openRouterService: any RecordingTranscriptionService
+    private let cleanupService: any TranscriptCleanupService
 
     init(
         recordingStore: RecordingStore,
         historyStore: TranscriptHistoryStore,
-        openRouterService: any RecordingTranscriptionService
+        openRouterService: any RecordingTranscriptionService,
+        cleanupService: any TranscriptCleanupService = OpenRouterService()
     ) {
         self.recordingStore = recordingStore
         self.historyStore = historyStore
         self.openRouterService = openRouterService
+        self.cleanupService = cleanupService
     }
 
     func process(
@@ -81,11 +90,21 @@ final class RecordingProcessor {
                 onProgress: onProgress
             )
             try Task.checkCancellation()
-            finalTranscript = draftTranscript
-
-            guard session.savedCaptureContinuous != false else {
-                throw RecordingProcessingError.incompleteSavedCapture
+            if let cleanup = session.cleanup {
+                onProgress(RecordingProcessingProgress(
+                    stage: .cleaningUp, currentPart: 1, totalParts: 1,
+                    transcriptPreview: draftTranscript
+                ))
+                let cleaned = try await cleanupService.cleanUp(
+                    apiKey: apiKey, transcript: draftTranscript, configuration: cleanup
+                )
+                try Task.checkCancellation()
+                guard let text = normalized(cleaned) else { throw OpenRouterServiceError.emptyTranscript }
+                finalTranscript = text
+            } else {
+                finalTranscript = draftTranscript
             }
+
             try recordingStore.saveFinalTranscript(
                 finalTranscript,
                 sessionID: sessionID
@@ -93,9 +112,6 @@ final class RecordingProcessor {
         }
 
         try Task.checkCancellation()
-        guard session.savedCaptureContinuous != false else {
-            throw RecordingProcessingError.incompleteSavedCapture
-        }
         let historyItem = try await historyStore.archive(
             session: recordingStore.load(sessionID),
             recordingDirectory: recordingStore.directoryURL(for: session.id),
@@ -108,7 +124,14 @@ final class RecordingProcessor {
         )
         try recordingStore.deleteSession(sessionID)
 
-        return ProcessedRecording(transcript: finalTranscript)
+        // A capture gap cannot be repaired by retrying transcription. Deliver the saved
+        // words and retain the interruption metadata with all source audio in history.
+        return ProcessedRecording(
+            transcript: finalTranscript,
+            captureWarning: session.savedCaptureContinuous == false
+                ? "Transcript saved. The microphone changed or stopped during recording; words spoken during the interruption may be missing."
+                : nil
+        )
     }
 
     private func resolveDraft(
@@ -263,7 +286,7 @@ final class RecordingProcessor {
         }
         if let vocabulary = session.vocabulary, !vocabulary.isEmpty {
             contextParts.append(
-                "Personal vocabulary (spelling hints only; include terms only when spoken):\n" +
+                "Personal vocabulary:\n" +
                 vocabulary.joined(separator: ", ")
             )
         }
@@ -273,7 +296,7 @@ final class RecordingProcessor {
             from: screenshotURL
         ) {
             contextParts.append(
-                "Visible text extracted locally from the attached app screenshot. Use it only to disambiguate words in the audio:\n\(visibleText)"
+                "Screenshot text:\n\(visibleText)"
             )
         }
 

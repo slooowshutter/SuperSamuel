@@ -1,5 +1,9 @@
 import Foundation
-import Security
+
+struct TranscriptCleanupConfiguration: Codable, Equatable, Sendable {
+    var model: String
+    var instructions: String
+}
 
 enum TranscriptionDelay: String, CaseIterable, Codable {
     case minimal, low, medium, high, xhigh
@@ -63,14 +67,20 @@ final class SettingsStore {
         static let transcriptionDelay = "realtimeTranscriptionDelay"
         static let personalDictionary = "personalDictionary"
         static let legacyOpenRouterAPIKey = "openRouterAPIKey"
+        static let usesLocalCredentials = "usesLocalCredentials"
         static let transcriptionModel = "openRouterTranscriptionModel"
         static let transcriptionContext = "openRouterTranscriptionContext"
         static let legacyCleanupPrompt = "openRouterCleanupPrompt"
+        static let cleanupEnabled = "transcriptCleanupEnabled"
+        static let cleanupModel = "transcriptCleanupModel"
+        static let cleanupInstructions = "transcriptCleanupInstructions"
+        static let minimalCleanupPromptInstalled = "minimalCleanupPromptInstalled"
     }
 
     private let defaults: UserDefaults
     private let openRouterCredentials: CredentialStore
     private let openAICredentials: CredentialStore
+    private(set) var credentialSaveError: String?
 
     init(
         defaults: UserDefaults = .standard,
@@ -82,7 +92,7 @@ final class SettingsStore {
         self.defaults = defaults
         self.openRouterCredentials = credentials
         self.openAICredentials = openAICredentials
-        migrateLegacyCleanupPrompt()
+        replaceLegacyPrompts()
         registerDefaults()
         migrateLegacyAPIKey()
     }
@@ -98,27 +108,31 @@ final class SettingsStore {
     }
 
     var openRouterAPIKey: String {
-        get { openRouterCredentials.readAPIKey() ?? "" }
+        get { openRouterCredentials.readAPIKey(useLocalStorage: usesLocalCredentials) ?? "" }
         set {
             do {
                 try openRouterCredentials.writeAPIKey(
-                    newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                    useLocalStorage: usesLocalCredentials
                 )
+                credentialSaveError = nil
             } catch {
-                print("Could not save OpenRouter API key: \(error.localizedDescription)")
+                credentialSaveError = "Could not save OpenRouter API key: \(error.localizedDescription)"
             }
         }
     }
 
     var openAIAPIKey: String {
-        get { openAICredentials.readAPIKey() ?? "" }
+        get { openAICredentials.readAPIKey(useLocalStorage: usesLocalCredentials) ?? "" }
         set {
             do {
                 try openAICredentials.writeAPIKey(
-                    newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                    newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                    useLocalStorage: usesLocalCredentials
                 )
+                credentialSaveError = nil
             } catch {
-                print("Could not save OpenAI API key: \(error.localizedDescription)")
+                credentialSaveError = "Could not save OpenAI API key: \(error.localizedDescription)"
             }
         }
     }
@@ -160,16 +174,34 @@ final class SettingsStore {
         }
     }
 
-    var transcriptionContext: String {
-        get {
-            defaults.string(forKey: Keys.transcriptionContext)
-                ?? OpenRouterService.defaultTranscriptionInstruction
-        }
-        set { defaults.set(newValue, forKey: Keys.transcriptionContext) }
-    }
-
     var hasOpenRouterAPIKey: Bool {
         !openRouterAPIKey.isEmpty
+    }
+
+    var cleanupEnabled: Bool {
+        get { defaults.bool(forKey: Keys.cleanupEnabled) }
+        set { defaults.set(newValue, forKey: Keys.cleanupEnabled) }
+    }
+
+    var cleanupModel: String {
+        get {
+            let value = defaults.string(forKey: Keys.cleanupModel)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return value.isEmpty ? "google/gemini-3.8-flash" : value
+        }
+        set { defaults.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines), forKey: Keys.cleanupModel) }
+    }
+
+    var cleanupInstructions: String {
+        get {
+            let instructions = defaults.string(forKey: Keys.cleanupInstructions) ?? ""
+            return instructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? OpenRouterService.defaultCleanupInstruction : instructions
+        }
+        set { defaults.set(newValue, forKey: Keys.cleanupInstructions) }
+    }
+
+    var cleanupConfiguration: TranscriptCleanupConfiguration? {
+        cleanupEnabled ? TranscriptCleanupConfiguration(model: cleanupModel, instructions: cleanupInstructions) : nil
     }
 
     var hasOpenAIAPIKey: Bool {
@@ -199,131 +231,48 @@ final class SettingsStore {
             Keys.realtimeTranscriptionEnabled: true,
             Keys.transcriptionDelay: TranscriptionDelay.xhigh.rawValue,
             Keys.personalDictionary: [String](),
-            Keys.transcriptionModel: OpenRouterService.transcriptionModel,
-            Keys.transcriptionContext: OpenRouterService.defaultTranscriptionInstruction
+            Keys.transcriptionModel: OpenRouterService.transcriptionModel
         ])
     }
 
-    private func migrateLegacyCleanupPrompt() {
-        guard let legacyPrompt = defaults.string(
-                forKey: Keys.legacyCleanupPrompt
-              ),
-              !legacyPrompt.trimmingCharacters(
-                in: .whitespacesAndNewlines
-              ).isEmpty
-        else {
-            return
-        }
+    private func replaceLegacyPrompts() {
+        guard !defaults.bool(forKey: Keys.minimalCleanupPromptInstalled) else { return }
+        defaults.removeObject(forKey: Keys.transcriptionContext)
+        defaults.removeObject(forKey: Keys.legacyCleanupPrompt)
+        defaults.removeObject(forKey: Keys.cleanupInstructions)
+        defaults.set(true, forKey: Keys.minimalCleanupPromptInstalled)
+    }
 
-        let currentContext = defaults.string(forKey: Keys.transcriptionContext)?
-            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard currentContext.isEmpty ||
-                currentContext == OpenRouterService.defaultTranscriptionInstruction
-        else {
-            return
-        }
+    var usesLocalCredentials: Bool {
+        defaults.bool(forKey: Keys.usesLocalCredentials)
+    }
 
-        defaults.set(legacyPrompt, forKey: Keys.transcriptionContext)
+    func useLocalCredentialStorage() throws {
+        guard !usesLocalCredentials else { return }
+        // Read both before writing or switching. A denied Keychain request must
+        // never be mistaken for an empty key and discard the saved credentials.
+        let routerKey = try openRouterCredentials.readKeychainAPIKey()
+        let openAIKey = try openAICredentials.readKeychainAPIKey()
+        try openRouterCredentials.writeAPIKey(routerKey ?? "", useLocalStorage: true)
+        try openAICredentials.writeAPIKey(openAIKey ?? "", useLocalStorage: true)
+        defaults.set(true, forKey: Keys.usesLocalCredentials)
     }
 
     private func migrateLegacyAPIKey() {
-        guard openRouterCredentials.readAPIKey() == nil else {
-            defaults.removeObject(forKey: Keys.legacyOpenRouterAPIKey)
-            return
-        }
-
         let legacyKey = defaults.string(forKey: Keys.legacyOpenRouterAPIKey)?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !legacyKey.isEmpty else {
-            return
-        }
+        guard !legacyKey.isEmpty else { return }
 
         do {
-            try openRouterCredentials.writeAPIKey(legacyKey)
+            let existing = usesLocalCredentials
+                ? try openRouterCredentials.readLocalAPIKey()
+                : try openRouterCredentials.readKeychainAPIKey()
+            if existing == nil {
+                try openRouterCredentials.writeAPIKey(legacyKey, useLocalStorage: usesLocalCredentials)
+            }
             defaults.removeObject(forKey: Keys.legacyOpenRouterAPIKey)
         } catch {
-            print("Could not migrate OpenRouter API key to Keychain: \(error.localizedDescription)")
-        }
-    }
-}
-
-final class CredentialStore {
-    private let service: String
-    private let account: String
-
-    init(
-        service: String = Bundle.main.bundleIdentifier ?? "com.supersamuel.app",
-        account: String = "openrouter-api-key"
-    ) {
-        self.service = service
-        self.account = account
-    }
-
-    func readAPIKey() -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne
-        ]
-
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data
-        else {
-            return nil
-        }
-
-        return String(data: data, encoding: .utf8)
-    }
-
-    func writeAPIKey(_ apiKey: String) throws {
-        let lookup: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account
-        ]
-
-        if apiKey.isEmpty {
-            let status = SecItemDelete(lookup as CFDictionary)
-            guard status == errSecSuccess || status == errSecItemNotFound else {
-                throw CredentialStoreError.keychain(status)
-            }
-            return
-        }
-
-        let data = Data(apiKey.utf8)
-        let updateStatus = SecItemUpdate(
-            lookup as CFDictionary,
-            [kSecValueData as String: data] as CFDictionary
-        )
-
-        if updateStatus == errSecSuccess {
-            return
-        }
-
-        guard updateStatus == errSecItemNotFound else {
-            throw CredentialStoreError.keychain(updateStatus)
-        }
-
-        var item = lookup
-        item[kSecValueData as String] = data
-        let addStatus = SecItemAdd(item as CFDictionary, nil)
-        guard addStatus == errSecSuccess else {
-            throw CredentialStoreError.keychain(addStatus)
-        }
-    }
-}
-
-private enum CredentialStoreError: LocalizedError {
-    case keychain(OSStatus)
-
-    var errorDescription: String? {
-        switch self {
-        case .keychain(let status):
-            return SecCopyErrorMessageString(status, nil) as String?
-                ?? "Keychain error \(status)"
+            print("Could not migrate OpenRouter API key: \(error.localizedDescription)")
         }
     }
 }

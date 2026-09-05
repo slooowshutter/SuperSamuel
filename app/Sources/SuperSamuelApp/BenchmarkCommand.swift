@@ -20,7 +20,7 @@ enum BenchmarkCommand {
       clip.instruction.txt      Optional rewrite instruction for this clip
 
     OPENROUTER_API_KEY is used when set. Otherwise the command reads the same
-    macOS Keychain entry as the app. Results are written to a new run directory.
+    credential storage as the app (Keychain or opted-in local files). Results are written to a new run directory.
     Non-Whisper strategies run once for every model supplied to --models.
     """
 
@@ -55,12 +55,14 @@ enum BenchmarkCommand {
             return environmentKey
         }
 
-        let keychainKey = CredentialStore().readAPIKey()?
+        let savedKey = CredentialStore().readAPIKey(
+            useLocalStorage: UserDefaults.standard.bool(forKey: "usesLocalCredentials")
+        )?
             .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        guard !keychainKey.isEmpty else {
+        guard !savedKey.isEmpty else {
             throw BenchmarkError.missingAPIKey
         }
-        return keychainKey
+        return savedKey
     }
 }
 

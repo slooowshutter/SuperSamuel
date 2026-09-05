@@ -4,10 +4,12 @@ struct TranscriptHistoryItem: Codable, Identifiable {
     let id: UUID
     let createdAt: Date
     let text: String
+    var savedCaptureContinuous: Bool?
 }
 
 enum TranscriptWorkflow: String, Codable, Equatable {
     case transcriptionOnly = "transcription-only"
+    case transcriptionThenCleanup = "transcription-then-cleanup"
     // Retained so metadata archived by older app versions still decodes.
     case whisperOnly = "whisper-only"
     case whisperThenTextLLM = "whisper-then-text-llm"
@@ -24,6 +26,7 @@ struct TranscriptWorkflowMetadata: Codable {
     var liveTranscriptionDelay: String?
     var transcriptSource: String?
     var savedAudioTranscriptionModel: String?
+    var cleanup: TranscriptCleanupConfiguration?
 }
 
 struct TranscriptAudioMetadata: Codable {
@@ -231,7 +234,8 @@ private final class TranscriptHistoryFiles {
         return TranscriptHistoryItem(
             id: metadata.id,
             createdAt: metadata.createdAt,
-            text: metadata.text
+            text: metadata.text,
+            savedCaptureContinuous: metadata.savedCaptureContinuous
         )
     }
 
@@ -346,7 +350,8 @@ private final class TranscriptHistoryFiles {
         return TranscriptHistoryItem(
             id: metadata.id,
             createdAt: metadata.createdAt,
-            text: metadata.text
+            text: metadata.text,
+            savedCaptureContinuous: metadata.savedCaptureContinuous
         )
     }
 
@@ -379,7 +384,7 @@ private final class TranscriptHistoryFiles {
             text: text,
             transcriptFilename: "transcript.txt",
             workflow: TranscriptWorkflowMetadata(
-                workflow: .transcriptionOnly,
+                workflow: session.cleanup == nil ? .transcriptionOnly : .transcriptionThenCleanup,
                 transcriptionModel: session.transcriptSource == "live"
                     ? session.liveTranscriptionModel : session.resolvedTranscriptionModel,
                 transcriptionContext: session.resolvedTranscriptionContext,
@@ -388,7 +393,8 @@ private final class TranscriptHistoryFiles {
                 liveTranscriptionModel: session.liveTranscriptionModel,
                 liveTranscriptionDelay: session.liveTranscriptionDelay,
                 transcriptSource: session.transcriptSource,
-                savedAudioTranscriptionModel: session.resolvedTranscriptionModel
+                savedAudioTranscriptionModel: session.resolvedTranscriptionModel,
+                cleanup: session.cleanup
             ),
             audio: audio,
             inputDevice: session.inputDevice,

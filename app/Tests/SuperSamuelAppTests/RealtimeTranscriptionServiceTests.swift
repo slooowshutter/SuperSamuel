@@ -45,7 +45,7 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
                 delay: delay, keywords: ["SuperSamuel", "OpenRouter", "Marc"]
             )
             XCTAssertEqual(service.configuration.context, context)
-            XCTAssertEqual(service.requiresSavedAudioFinalization, usesLongContext)
+            XCTAssertEqual(service.usesShortenedInstructions, usesLongContext)
             let started = Date()
             for start in stride(from: 0, to: audio.count, by: 9_600) {
                 let end = min(start + 9_600, audio.count)
@@ -59,7 +59,7 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
                 let result: [String: Any] = [
                     "delay": delay.rawValue, "transcript": transcript,
                     "context_characters": context.unicodeScalars.count,
-                    "requires_saved_audio_finalization": service.requiresSavedAudioFinalization,
+                    "uses_shortened_instructions": service.usesShortenedInstructions,
                     "audio_seconds": Double(audio.count) / 48_000,
                     "first_text_seconds": firstTextAt?.timeIntervalSince(started) ?? -1,
                     "stop_to_finish_seconds": Date().timeIntervalSince(stopped)
@@ -172,7 +172,7 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
         )
 
         XCTAssertEqual(service.configuration.context, context)
-        XCTAssertTrue(service.requiresSavedAudioFinalization)
+        XCTAssertTrue(service.usesShortenedInstructions)
         XCTAssertNil(service.failureMessage)
         let session = try XCTUnwrap(socket.events.first?["session"] as? [String: Any])
         let audio = try XCTUnwrap(session["audio"] as? [String: Any])
@@ -181,7 +181,7 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
         let prompt = try XCTUnwrap(transcription["prompt"] as? String)
         XCTAssertFalse(prompt.isEmpty)
         XCTAssertLessThanOrEqual(prompt.unicodeScalars.count, 1_024)
-        XCTAssertFalse(context.hasPrefix(prompt), "Live preview must not silently truncate full instructions")
+        XCTAssertTrue(context.hasPrefix(prompt), "Use the configured live instructions within the supported limit")
         XCTAssertEqual(transcription["delay"] as? String, "medium")
         XCTAssertEqual(transcription["keywords"] as? [String], keywords)
 
@@ -200,7 +200,7 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
         let service = RealtimeTranscriptionService(makeSocket: { _ in socket }) { _ in }
         defer { service.cancel() }
         try await service.start(apiKey: "test", transcriptionContext: "Instructions", delay: .low, keywords: ["SuperSamuel", "AC-42"])
-        XCTAssertFalse(service.requiresSavedAudioFinalization)
+        XCTAssertFalse(service.usesShortenedInstructions)
         service.updateTranscriptionContext("Instructions\nScreenshot: project AC-42")
         try await waitUntil { socket.events.filter { $0["type"] as? String == "session.update" }.count == 2 }
         let session = try XCTUnwrap(socket.events.last?["session"] as? [String: Any])
@@ -210,12 +210,12 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
         XCTAssertEqual(transcription["delay"] as? String, "low")
         XCTAssertEqual(transcription["keywords"] as? [String], ["SuperSamuel", "AC-42"])
         XCTAssertEqual(transcription["prompt"] as? String, "Instructions\nScreenshot: project AC-42")
-        XCTAssertFalse(service.requiresSavedAudioFinalization)
+        XCTAssertFalse(service.usesShortenedInstructions)
         let oversizedContext = String(repeating: "a", count: 1_025)
         service.updateTranscriptionContext(oversizedContext)
         try await waitUntil { socket.events.filter { $0["type"] as? String == "session.update" }.count == 3 }
         XCTAssertEqual(service.configuration.context, oversizedContext)
-        XCTAssertTrue(service.requiresSavedAudioFinalization)
+        XCTAssertTrue(service.usesShortenedInstructions)
         XCTAssertNil(service.failureMessage)
         let updatedSession = try XCTUnwrap(socket.events.last?["session"] as? [String: Any])
         let updatedAudio = try XCTUnwrap(updatedSession["audio"] as? [String: Any])
@@ -233,7 +233,7 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
         service.updateTranscriptionContext("")
         try await waitUntil { socket.events.filter { $0["type"] as? String == "session.update" }.count == 4 }
         XCTAssertEqual(service.configuration.context, "")
-        XCTAssertTrue(service.requiresSavedAudioFinalization, "Clearing context cannot apply full instructions to earlier preview audio")
+        XCTAssertFalse(service.usesShortenedInstructions)
         XCTAssertNil(service.failureMessage)
         XCTAssertTrue(RealtimeTranscriptionService.contextIsValid(String(repeating: "a", count: 1_024)))
         XCTAssertFalse(RealtimeTranscriptionService.contextIsValid(oversizedContext))

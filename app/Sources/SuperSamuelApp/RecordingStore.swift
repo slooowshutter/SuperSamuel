@@ -43,6 +43,7 @@ struct RecordingSession: Codable, Identifiable {
     var transcriptSource: String?
     var requiresFreshTranscription: Bool?
     var livePreviewRequiresFinalization: Bool?
+    var cleanup: TranscriptCleanupConfiguration?
 
     var canUseLiveTranscript: Bool {
         liveCaptureContinuous != false && livePreviewRequiresFinalization != true
@@ -124,7 +125,8 @@ final class RecordingStore {
         transcriptionContext: String = "",
         vocabulary: [String] = [],
         liveTranscriptionModel: String? = nil,
-        liveTranscriptionDelay: String? = nil
+        liveTranscriptionDelay: String? = nil,
+        cleanup: TranscriptCleanupConfiguration? = nil
     ) throws -> RecordingSession {
         try ensureDirectories()
 
@@ -145,7 +147,8 @@ final class RecordingStore {
             inputDevice: nil,
             vocabulary: vocabulary,
             liveTranscriptionModel: liveTranscriptionModel,
-            liveTranscriptionDelay: liveTranscriptionDelay
+            liveTranscriptionDelay: liveTranscriptionDelay,
+            cleanup: cleanup
         )
 
         try fileManager.createDirectory(
@@ -225,9 +228,15 @@ final class RecordingStore {
         liveTranscriptionModel: String? = nil,
         liveTranscriptionDelay: String? = nil,
         forceRetranscription: Bool = false,
+        cleanup: TranscriptCleanupConfiguration? = nil,
         screenshotSourceURL: URL?
     ) throws {
         var session = try load(sessionID)
+        if session.cleanup != cleanup {
+            let finalURL = directory(for: sessionID).appendingPathComponent("final-transcript.txt")
+            if fileManager.fileExists(atPath: finalURL.path) { try fileManager.removeItem(at: finalURL) }
+        }
+        session.cleanup = cleanup
         let context = normalizedTranscriptionContext(transcriptionContext)
         let screenshotChanged = screenshotSourceURL.map { source in
             guard let existing = screenshotURL(for: session) else { return true }

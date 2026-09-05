@@ -23,15 +23,41 @@ shows about five lines at its default size, and can be resized by dragging its
 bottom-right resize grip. Settings includes the persistent GPT Live Transcribe
 delay presets **Minimal**, **Low**, **Medium**, **High**, and **X-high** (default).
 Model delay and the 500 ms speech-pause threshold are separate controls; presets
-are not converted into estimated milliseconds. Dictionary, instructions, and
-delay changes apply to the next recording. Screenshot updates retain that
-recording's configuration. The deployed live API accepts up to 1,024 characters
-of instructions plus screenshot text. With longer context, live preview continues
-using a short general transcription prompt and the personal dictionary. After
-Stop, the saved audio is transcribed with the full instructions and screenshot.
-The overlay explains this mode; context is never truncated and the preview is
-never delivered as the final result. Finalization takes an additional saved-audio
-request in this mode.
+are not converted into estimated milliseconds. Dictionary, cleanup instructions,
+and delay changes apply to the next recording. Screenshot updates retain that
+recording's configuration. Recognition has no editing prompt. The personal
+dictionary is sent separately as live keywords, and optional screenshot context
+is limited to the first 1,024 Unicode scalars. Full screenshot context remains
+available for saved-audio fallback. The saved-audio model field accepts STT
+models; editing happens in the optional cleanup step below.
+
+## Optional text cleanup
+
+In Settings, enable **Text cleanup → Clean up transcript after Stop** to have an
+OpenRouter chat model edit the completed transcript. The default cleanup model
+is `google/gemini-3.8-flash`; the model field is editable. This adds one text-only
+request after transcription, with a **Cleaning up transcript...** status.
+Gemini 3.8 Flash text cleanup prefers `google-ai-studio/priority`, with fallback
+enabled. Priority has a higher token rate; reported token throughput does not
+include request startup latency. Other models retain throughput-based routing.
+
+**Editing instructions** is the app's single editable cleanup prompt. Its default
+preserves the speaker's wording and details while removing clear speech
+disfluencies, with examples covering versions, corrections, emphasis, and
+alternative ideas. **Restore Default** restores that same prompt. The full prompt
+is sent as the system message, with only the raw transcript in the user message;
+no additional editing instructions are prepended or appended. Both live
+transcription and saved-audio fallback feed this step, without audio or screenshots.
+
+On the first launch after this update, the old saved transcription and cleanup
+prompts are replaced with the new default. Subsequent edits persist across
+relaunches. Model, dictionary, and cleanup-enabled preferences are preserved.
+
+The recording snapshots its cleanup settings at Start. History stores those settings,
+the original `draft-transcript.txt`, and the cleaned final transcript with all audio.
+If cleanup fails or is cancelled, the draft remains available. Retrying that cleanup
+reuses the draft; changing cleanup settings only invalidates the edited result.
+Turning cleanup off delivers transcription directly. Cleanup is off by default.
 
 On macOS 26 and newer, the compact notification-style recording overlay and
 settings window use untinted native **clear Liquid Glass** across their full
@@ -89,10 +115,35 @@ swift build
    show live transcription. This key is stored in a separate Keychain entry.
 5. Select the live transcription delay. Optionally change the saved-audio model
    from `openai/gpt-transcribe`; it is independent of the live model.
-6. Edit transcription instructions for language, punctuation, and cleanup style.
+6. Enable **Text cleanup** and edit **Editing instructions** to customize cleanup.
 7. Add names and phrases to **Personal dictionary**, one per line. Entries are
    trimmed and deduplicated. Invalid characters show an error and leave the last
    valid dictionary saved.
+
+To avoid Keychain authorization prompts after local app updates, choose
+**Settings → API key storage → Use local key storage**. This copies both saved
+keys into `~/Library/Application Support/SuperSamuel/Credentials/` and keeps
+using those files after updates. macOS may ask for Keychain access once per key
+during the copy. The switch only takes effect after both keys have been read
+and saved successfully; the original Keychain entries remain as backups.
+
+Local files are **unencrypted**. The directory has owner-only permissions
+(`0700`) and each key file is readable and writable only by your account
+(`0600`), including during replacement. Other apps running as your macOS user
+can still read them. Keychain remains the default until you explicitly select
+local storage. Editing or clearing a local key does not alter the old Keychain
+backup, and the app never silently falls back to that backup.
+
+The build script uses ad hoc signing. macOS assigns that code a Keychain
+partition based on its changing code hash, even with a fixed designated
+requirement. Seamless Keychain access across updates requires an appropriate,
+consistent Apple signing identity; a fixed bundle identifier or self-signed
+certificate alone does not solve this. See
+[Apple's Keychain client identification implementation](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/clientid.cpp).
+
+Scrolling over text fields or unfocused editors scrolls the settings page.
+Click into a long editor to scroll its text; reaching either end continues
+scrolling the page. Short and disabled editors do not trap scrolling.
 
 The default transcription model is:
 
@@ -100,15 +151,10 @@ The default transcription model is:
 openai/gpt-transcribe
 ```
 
-SuperSamuel sends instructions as a free-form `prompt` for both the direct
-Realtime session and the OpenRouter fallback. Dictionary entries are sent as live
-`keywords` and included as vocabulary in the fallback prompt. GPT Transcribe
-can use that context for light cleanup and style guidance, but it remains a
-transcription model: the instructions do not alter the audio waveform, and
-large semantic rewrites are not guaranteed. Screenshot text is extracted
-locally and appended as additional disambiguation context without adding a
-second model request. The realtime transcript is used directly; SuperSamuel
-does not send it through a separate cleanup model before pasting.
+Dictionary entries are sent as live `keywords` and included as vocabulary in the
+fallback context. Screenshot text is extracted locally and supplied as recognition
+context without a second model request. When cleanup is enabled, the completed
+transcript is edited using the single prompt in Settings before delivery.
 
 ## Headless dictation benchmark
 
@@ -170,7 +216,7 @@ Use 16 kHz mono PCM WAV for the broadest cross-model compatibility. Supported
 input formats still depend on the selected model and its routed provider.
 
 The API key comes from `OPENROUTER_API_KEY` when set, otherwise from the same
-Keychain entry as the app. Every run creates a new directory containing:
+credential storage as the app (Keychain or opted-in local files). Every run creates a new directory containing:
 
 - `results.jsonl` with the audio hash, exact instruction, model/provider,
   latency, usage, cost, output, errors, and optional word-error rate
@@ -215,8 +261,11 @@ and missing PCM samples are monitored separately from silence. The live engine
 and converter are rebuilt after route changes. An interrupted live stream forces
 saved-audio transcription when stopped. If local capture also stops or changes
 microphones, new files preserve the recorded parts and the overlay warns about
-missing audio. Partial results remain recoverable and are not automatically pasted
-or archived as complete.
+missing audio. The saved parts are transcribed in order and delivered as one
+transcript. An interruption alone does not block delivery: the overlay and history
+note that words during the interruption may be missing, and the archive preserves
+every source file and the capture continuity metadata. Failed transcription still
+keeps the recording available for retry.
 
 ## Recording recovery
 
@@ -228,7 +277,7 @@ Audio is stored under:
 
 Each recording has its own folder containing:
 
-- The durable M4A recording (legacy recovered sessions may contain several parts)
+- The durable M4A recording (microphone changes or interruptions may create several parts)
 - A JSON manifest
 - Cached transcript parts (legacy recordings may also contain cleaned parts)
 - The saved realtime or fallback draft in `draft-transcript.txt`

@@ -4,6 +4,23 @@ import XCTest
 
 @MainActor
 final class RecordingStoreTests: XCTestCase {
+    func testChangingCleanupPreservesDraftAndOnlyInvalidatesEditedResult() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let cleanup = TranscriptCleanupConfiguration(model: "google/gemini-3.8-flash", instructions: "Keep names")
+        let session = try store.createSession(cleanup: cleanup)
+        let audio = try store.beginChunk(in: session.id)
+        try Data([1, 2, 3]).write(to: audio)
+        try store.saveDraftTranscript("Original words", sessionID: session.id)
+        try store.saveFinalTranscript("Edited words", sessionID: session.id)
+        try store.prepareForProcessing(sessionID: session.id, cleanup: nil, screenshotSourceURL: nil)
+        XCTAssertNil(try store.load(session.id).cleanup)
+        XCTAssertNil(store.finalTranscript(sessionID: session.id))
+        XCTAssertEqual(store.draftTranscript(sessionID: session.id), "Original words")
+        XCTAssertEqual(try Data(contentsOf: audio), Data([1, 2, 3]))
+    }
+
     func testTranscriptionConfigurationPersistsWithSession() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)

@@ -18,6 +18,7 @@ final class DictationControllerTests: XCTestCase {
         let settings = SettingsStore(defaults: defaults, credentials: credentials, openAICredentials: openAICredentials)
         settings.openRouterAPIKey = "test-key"
         settings.realtimeTranscriptionEnabled = false
+        settings.cleanupEnabled = true
         let store = RecordingStore(rootDirectory: root)
         let kept = try store.createSession()
         let oldAudio = try store.beginChunk(in: kept.id)
@@ -40,6 +41,9 @@ final class DictationControllerTests: XCTestCase {
         XCTAssertEqual(permissionRequests, 1)
         XCTAssertTrue(capture.isRecording)
         XCTAssertEqual(try store.pendingSessions().count, 2)
+        let active = try XCTUnwrap(store.pendingSessions().first { $0.id != kept.id })
+        XCTAssertNil(active.resolvedTranscriptionContext)
+        XCTAssertEqual(active.cleanup?.instructions, OpenRouterService.defaultCleanupInstruction)
         XCTAssertEqual(try store.load(kept.id).status, .ready)
         XCTAssertEqual(try Data(contentsOf: oldAudio), Data([1, 2, 3]))
 

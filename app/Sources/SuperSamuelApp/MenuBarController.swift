@@ -237,6 +237,17 @@ final class MenuBarController: NSObject, NSMenuDelegate {
                 item.toolTip = transcript.text
                 let actions = NSMenu()
 
+                if transcript.savedCaptureContinuous == false {
+                    let notice = NSMenuItem(
+                        title: "Microphone interrupted; some words may be missing.",
+                        action: nil,
+                        keyEquivalent: ""
+                    )
+                    notice.isEnabled = false
+                    actions.addItem(notice)
+                    actions.addItem(.separator())
+                }
+
                 let copyItem = NSMenuItem(
                     title: "Copy Transcript",
                     action: #selector(handleCopyHistoryTranscript(_:)),

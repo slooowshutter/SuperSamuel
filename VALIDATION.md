@@ -1,5 +1,28 @@
 # Implementation verification
 
+## Current PR state (September 5, 2026)
+
+The current implementation uses faithful live recognition with the personal
+dictionary and optional screenshot context, followed by optional text cleanup
+using the complete prompt shown in Settings. Oversized live context is limited
+to 1,024 Unicode scalars without automatically requesting a second transcription.
+Legacy recordings explicitly marked as requiring saved-audio finalization still
+respect that flag. The earlier long-instructions investigation below records a
+previous implementation and does not describe the current default flow.
+
+The final Swift suite ran 82 tests with one paid API test skipped and no failures.
+All 11 Python benchmark tests passed using the declared dependencies; the release
+build and `git diff --check` also passed.
+Settings coverage includes scrolling over plain and secure fields, unfocused
+editors, focused editor boundaries, short editors, and disabled editors.
+Credential coverage includes opt-in local migration, fresh-instance reads,
+owner-only file permissions, failed migration, and clearing a key without
+restoring the old Keychain backup. Local storage remains opt-in and unencrypted.
+The historical API measurements below predate these final changes; no live API
+requests or screen controls were used for the PR verification.
+
+## Initial verification
+
 Verified on September 4, 2026. The native Swift architecture and durable AAC
 recording path are retained.
 

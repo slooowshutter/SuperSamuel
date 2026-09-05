@@ -20,12 +20,14 @@ final class AppState: ObservableObject {
     @Published var showsRecoveryActions = false
     @Published var recordingDeviceName: String?
     @Published var captureStatusMessage: String?
-    @Published var livePreviewRequiresFinalization = false
+    @Published var liveInstructionsShortened = false
+    @Published var processingStatusMessage: String?
 
     private let maxWaveSamples = 96
 
     func setPhase(_ phase: DictationPhase) {
         self.phase = phase
+        if phase != .transcribing { processingStatusMessage = nil }
     }
 
     func setElapsed(seconds: TimeInterval) {
@@ -62,7 +64,7 @@ final class AppState: ObservableObject {
         transcriptText = "Recording locally..."
         recordingDeviceName = deviceName
         captureStatusMessage = nil
-        livePreviewRequiresFinalization = false
+        liveInstructionsShortened = false
         attachedScreenshot = nil
         screenshotStatusMessage = nil
         isCapturingScreenshot = false

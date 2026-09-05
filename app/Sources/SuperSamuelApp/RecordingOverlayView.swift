@@ -179,8 +179,8 @@ struct RecordingOverlayView: View {
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.orange)
                     .fixedSize(horizontal: false, vertical: true)
-            } else if state.phase == .recording && state.livePreviewRequiresFinalization {
-                Text("Live preview · Full instructions applied after Stop")
+            } else if state.phase == .recording && state.liveInstructionsShortened {
+                Text("Live instructions limited to 1,024 characters · No extra transcription")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.white.opacity(0.56))
                     .fixedSize(horizontal: false, vertical: true)
@@ -272,7 +272,7 @@ struct RecordingOverlayView: View {
     private var statusLabel: String {
         switch state.phase {
         case .idle:
-            return "Ready"
+            return state.captureStatusMessage == nil ? "Ready" : "Transcript saved"
         case .recording:
             if let deviceName = state.recordingDeviceName,
                !deviceName.isEmpty
@@ -281,7 +281,7 @@ struct RecordingOverlayView: View {
             }
             return "Recording · System microphone"
         case .transcribing:
-            return "Transcribing"
+            return state.processingStatusMessage ?? "Transcribing"
         case .error:
             return "Needs attention"
         }

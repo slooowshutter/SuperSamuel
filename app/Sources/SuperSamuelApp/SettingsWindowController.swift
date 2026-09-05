@@ -15,8 +15,19 @@ final class SettingsWindowController {
         let host = NSHostingView(rootView: SettingsView(settings: settings))
         host.wantsLayer = true
         host.layer?.backgroundColor = NSColor.clear.cgColor
+        let scrollView = NSScrollView(frame: window.contentView?.bounds ?? .zero)
+        scrollView.drawsBackground = false
+        scrollView.hasVerticalScroller = true
+        scrollView.autohidesScrollers = true
+        scrollView.documentView = host
+        host.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            host.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+            host.leadingAnchor.constraint(equalTo: scrollView.contentView.leadingAnchor),
+            host.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor)
+        ])
         window.contentView = makeLiquidGlassHost(
-            content: host,
+            content: scrollView,
             cornerRadius: 24
         )
         NSApp.activate(ignoringOtherApps: true)
@@ -29,7 +40,7 @@ final class SettingsWindowController {
             return window
         }
 
-        let window = NSWindow(
+        let window = SettingsWindow(
             contentRect: NSRect(x: 0, y: 0, width: 680, height: 700),
             styleMask: [
                 .titled,
@@ -60,22 +71,29 @@ private struct SettingsView: View {
 
     @State private var openRouterAPIKey: String
     @State private var openAIAPIKey: String
+    @State private var usesLocalCredentials: Bool
+    @State private var credentialError: String?
     @State private var realtimeTranscriptionEnabled: Bool
     @State private var transcriptionModel: String
-    @State private var transcriptionContext: String
     @State private var transcriptionDelay: TranscriptionDelay
     @State private var dictionaryText: String
     @State private var dictionaryError: String?
+    @State private var cleanupEnabled: Bool
+    @State private var cleanupModel: String
+    @State private var cleanupInstructions: String
 
     init(settings: SettingsStore) {
         self.settings = settings
         _openRouterAPIKey = State(initialValue: settings.openRouterAPIKey)
         _openAIAPIKey = State(initialValue: settings.openAIAPIKey)
+        _usesLocalCredentials = State(initialValue: settings.usesLocalCredentials)
         _realtimeTranscriptionEnabled = State(
             initialValue: settings.realtimeTranscriptionEnabled
         )
+        _cleanupEnabled = State(initialValue: settings.cleanupEnabled)
+        _cleanupModel = State(initialValue: settings.cleanupModel)
+        _cleanupInstructions = State(initialValue: settings.cleanupInstructions)
         _transcriptionModel = State(initialValue: settings.transcriptionModel)
-        _transcriptionContext = State(initialValue: settings.transcriptionContext)
         _transcriptionDelay = State(initialValue: settings.transcriptionDelay)
         _dictionaryText = State(initialValue: settings.personalDictionary.joined(separator: "\n"))
     }
@@ -92,157 +110,187 @@ private struct SettingsView: View {
     }
 
     private var settingsContent: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
-                Text("Settings")
-                    .font(.system(size: 22, weight: .semibold))
+        VStack(alignment: .leading, spacing: 20) {
+            Text("Settings")
+                .font(.system(size: 22, weight: .semibold))
 
-                Text("Changes save automatically and apply to the next recording.")
-                    .font(.system(size: 12))
+            Text("Changes save automatically and apply to the next recording.")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+
+            section(title: "API key storage", description: usesLocalCredentials
+                    ? "Keys are saved on this Mac and stay available after app updates, without Keychain prompts."
+                    : "Keychain protects your keys. Locally rebuilt apps can trigger access prompts after updates.") {
+                Text("Local storage uses an unencrypted file restricted to your Mac account. Other apps running under your account can read it.")
+                    .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-
-                section(
-                    title: "OpenRouter",
-                    description: "Used as the durable saved-audio fallback if realtime transcription is unavailable."
-                ) {
-                    SecureField("sk-or-v1-...", text: apiKeyBinding)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 9)
-                        .liquidGlassSurface(cornerRadius: 11)
-
-                    Text("Stored in your macOS Keychain.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                }
-
-                section(
-                    title: "OpenAI Realtime",
-                    description: "Streams microphone audio to GPT Live Transcribe and displays text as you speak."
-                ) {
-                    Text("OpenAI API key (separate from OpenRouter)")
-                        .font(.system(size: 11, weight: .semibold))
-
-                    SecureField("sk-...", text: openAIAPIKeyBinding)
-                        .textFieldStyle(.plain)
-                        .font(.system(size: 12, design: .monospaced))
-                        .padding(.horizontal, 11)
-                        .padding(.vertical, 9)
-                        .liquidGlassSurface(cornerRadius: 11)
-
-                    Toggle(
-                        "Use GPT Live Transcribe",
-                        isOn: realtimeTranscriptionEnabledBinding
-                    )
-
-                    Picker("Transcription delay", selection: transcriptionDelayBinding) {
-                        ForEach(TranscriptionDelay.allCases, id: \.self) { delay in
-                            Text(delay.title).tag(delay)
+                if !usesLocalCredentials {
+                    Button("Use local key storage") {
+                        do {
+                            try settings.useLocalCredentialStorage()
+                            usesLocalCredentials = settings.usesLocalCredentials
+                            openRouterAPIKey = settings.openRouterAPIKey
+                            openAIAPIKey = settings.openAIAPIKey
+                            credentialError = nil
+                        } catch {
+                            credentialError = "Could not move keys: " + error.localizedDescription
                         }
                     }
-
-                    Text("Higher delay gives the model more audio context before showing text. The speech-pause threshold stays at 500 ms for every setting.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-
-                    Label(realtimeStatusText, systemImage: realtimeStatusSymbol)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(realtimeStatusColor)
-
-                    Text("An OpenRouter key cannot authenticate the direct OpenAI WebSocket. The OpenAI key is stored separately in your macOS Keychain.")
+                    Text("Copies your saved keys; macOS may ask for access once. Existing Keychain entries are kept as a backup.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                 }
+                if let credentialError {
+                    Text(credentialError).font(.system(size: 11)).foregroundStyle(.red)
+                }
+            }
 
-                section(
-                    title: "Transcription",
-                    description: "Choose the OpenRouter model used to transcribe saved audio and retry recordings. Live transcription uses GPT Live Transcribe separately."
-                ) {
-                    TextField(
-                        OpenRouterService.transcriptionModel,
-                        text: transcriptionModelBinding
-                    )
+            section(
+                title: "OpenRouter",
+                description: "Used for optional text cleanup and saved-audio transcription when live transcription is unavailable."
+            ) {
+                SecureField("sk-or-v1-...", text: apiKeyBinding)
                     .textFieldStyle(.plain)
                     .font(.system(size: 12, design: .monospaced))
                     .padding(.horizontal, 11)
                     .padding(.vertical, 9)
                     .liquidGlassSurface(cornerRadius: 11)
 
-                    Text("Enter any OpenRouter model supported by the audio transcription endpoint. Clear the field to restore the default.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                Text(usesLocalCredentials ? "Stored privately on this Mac." : "Stored in your macOS Keychain.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
 
-                    VStack(alignment: .leading, spacing: 8) {
-                        HStack {
-                            Text("Transcription instructions")
-                                .font(.system(size: 13, weight: .semibold))
+            section(
+                title: "OpenAI Realtime",
+                description: "Streams microphone audio to GPT Live Transcribe and displays text as you speak."
+            ) {
+                Text("OpenAI API key (separate from OpenRouter)")
+                    .font(.system(size: 11, weight: .semibold))
 
-                            Spacer()
+                SecureField("sk-...", text: openAIAPIKeyBinding)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12, design: .monospaced))
+                    .padding(.horizontal, 11)
+                    .padding(.vertical, 9)
+                    .liquidGlassSurface(cornerRadius: 11)
 
-                            Button("Restore Default") {
-                                transcriptionContext =
-                                    OpenRouterService.defaultTranscriptionInstruction
-                                settings.transcriptionContext =
-                                    OpenRouterService.defaultTranscriptionInstruction
-                            }
-                            .liquidGlassButton(
-                                tint: Color.accentColor.opacity(0.78)
-                            )
-                            .disabled(
-                                transcriptionContext ==
-                                    OpenRouterService.defaultTranscriptionInstruction
-                            )
-                        }
+                Toggle(
+                    "Use GPT Live Transcribe",
+                    isOn: realtimeTranscriptionEnabledBinding
+                )
 
-                        TextEditor(text: transcriptionContextBinding)
-                            .font(.system(size: 13))
-                            .scrollContentBackground(.hidden)
-                            .padding(8)
-                            .frame(minHeight: 220)
-                            .liquidGlassSurface(cornerRadius: 12)
-
-                        Text("Use these instructions for minimal cleanup, languages, and punctuation style. Add names and technical terms to your personal dictionary below. Long instructions are applied in full after Stop while live preview continues.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-
-                        if !RealtimeTranscriptionService.contextIsValid(transcriptionContext) {
-                            Text("Your full instructions are saved. Live preview uses your personal dictionary; the final transcription applies these instructions after Stop.")
-                                .font(.system(size: 11))
-                                .foregroundStyle(.secondary)
-                        }
+                Picker("Transcription delay", selection: transcriptionDelayBinding) {
+                    ForEach(TranscriptionDelay.allCases, id: \.self) { delay in
+                        Text(delay.title).tag(delay)
                     }
                 }
 
-                section(
-                    title: "Personal dictionary",
-                    description: "Add one word or phrase per line to help recognize names, products, and technical vocabulary."
-                ) {
-                    TextEditor(text: dictionaryBinding)
+                Text("Higher delay gives the model more audio context before showing text. The speech-pause threshold stays at 500 ms for every setting.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                Label(realtimeStatusText, systemImage: realtimeStatusSymbol)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(realtimeStatusColor)
+
+                Text(usesLocalCredentials
+                     ? "An OpenRouter key cannot authenticate the direct OpenAI WebSocket. The OpenAI key is stored separately on this Mac."
+                     : "An OpenRouter key cannot authenticate the direct OpenAI WebSocket. The OpenAI key is stored separately in your macOS Keychain.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
+
+            section(
+                title: "Text cleanup",
+                description: "After transcription, an LLM edits the text using your full instructions. This adds a short wait after Stop; audio is not sent to the cleanup model."
+            ) {
+                Toggle("Clean up transcript after Stop", isOn: $cleanupEnabled)
+                    .onChange(of: cleanupEnabled) { value in
+                        settings.cleanupEnabled = value
+                    }
+                if cleanupEnabled {
+                    TextField("google/gemini-3.8-flash", text: $cleanupModel)
+                        .textFieldStyle(.plain)
+                        .font(.system(size: 12, design: .monospaced))
+                        .padding(11)
+                        .liquidGlassSurface(cornerRadius: 11)
+                        .onChange(of: cleanupModel) { settings.cleanupModel = $0 }
+                    Text("OpenRouter chat model")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                    if settings.cleanupModel == "google/gemini-3.8-flash" {
+                        Text("Prefers Google AI Studio Priority at its higher rate, with fallback if unavailable.")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    HStack {
+                        Text("Editing instructions").font(.headline)
+                        Spacer()
+                        Button("Restore Default") {
+                            cleanupInstructions = OpenRouterService.defaultCleanupInstruction
+                            settings.cleanupInstructions = cleanupInstructions
+                        }
+                        .liquidGlassButton(tint: Color.accentColor.opacity(0.78))
+                        .disabled(cleanupInstructions == OpenRouterService.defaultCleanupInstruction)
+                    }
+                    TextEditor(text: $cleanupInstructions)
                         .font(.system(size: 13))
                         .scrollContentBackground(.hidden)
-                        .padding(8)
-                        .frame(minHeight: 130)
+                        .padding(8).frame(height: 220)
                         .liquidGlassSurface(cornerRadius: 12)
-
-                    if let dictionaryError {
-                        Text(dictionaryError + " Your last valid dictionary is still saved.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.red)
-                            .accessibilityLabel("Dictionary validation error: " + dictionaryError)
-                    } else {
-                        Text("Saved automatically. Blank lines and duplicate entries are ignored; spelling from the first entry is kept.")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                    }
+                        .onChange(of: cleanupInstructions) { settings.cleanupInstructions = $0 }
+                    Text("This is the complete cleanup prompt. Edit it here or restore the default. Turn cleanup off to deliver the transcription directly.")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal, 20)
-            .padding(.top, 44)
-            .padding(.bottom, 20)
-            .frame(maxWidth: .infinity, alignment: .leading)
+
+            section(
+                title: "Saved-audio fallback",
+                description: "Choose the OpenRouter model used to transcribe saved audio and retry recordings. Live transcription uses GPT Live Transcribe separately."
+            ) {
+                TextField(
+                    OpenRouterService.transcriptionModel,
+                    text: transcriptionModelBinding
+                )
+                .textFieldStyle(.plain)
+                .font(.system(size: 12, design: .monospaced))
+                .padding(.horizontal, 11)
+                .padding(.vertical, 9)
+                .liquidGlassSurface(cornerRadius: 11)
+
+                Text("This field accepts speech-to-text models, not general chat models such as Gemini. It does not change the live model or add an LLM editing step.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+            }
+
+            section(
+                title: "Personal dictionary",
+                description: "Add one word or phrase per line to help recognize names, products, and technical vocabulary."
+            ) {
+                TextEditor(text: dictionaryBinding)
+                    .font(.system(size: 13))
+                    .scrollContentBackground(.hidden)
+                    .padding(8)
+                    .frame(height: 130)
+                    .liquidGlassSurface(cornerRadius: 12)
+
+                if let dictionaryError {
+                    Text(dictionaryError + " Your last valid dictionary is still saved.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.red)
+                        .accessibilityLabel("Dictionary validation error: " + dictionaryError)
+                } else {
+                    Text("Saved automatically. Blank lines and duplicate entries are ignored; spelling from the first entry is kept.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
         }
-        .frame(minWidth: 680, minHeight: 700)
+        .padding(.horizontal, 20)
+        .padding(.top, 44)
+        .padding(.bottom, 20)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var apiKeyBinding: Binding<String> {
@@ -251,6 +299,7 @@ private struct SettingsView: View {
             set: { value in
                 openRouterAPIKey = value
                 settings.openRouterAPIKey = value
+                credentialError = settings.credentialSaveError
             }
         )
     }
@@ -261,6 +310,7 @@ private struct SettingsView: View {
             set: { value in
                 openAIAPIKey = value
                 settings.openAIAPIKey = value
+                credentialError = settings.credentialSaveError
             }
         )
     }
@@ -281,16 +331,6 @@ private struct SettingsView: View {
             set: { value in
                 transcriptionModel = value
                 settings.transcriptionModel = value
-            }
-        )
-    }
-
-    private var transcriptionContextBinding: Binding<String> {
-        Binding(
-            get: { transcriptionContext },
-            set: { value in
-                transcriptionContext = value
-                settings.transcriptionContext = value
             }
         )
     }
