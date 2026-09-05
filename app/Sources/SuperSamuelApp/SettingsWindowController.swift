@@ -63,6 +63,9 @@ private struct SettingsView: View {
     @State private var realtimeTranscriptionEnabled: Bool
     @State private var transcriptionModel: String
     @State private var transcriptionContext: String
+    @State private var transcriptionDelay: TranscriptionDelay
+    @State private var dictionaryText: String
+    @State private var dictionaryError: String?
 
     init(settings: SettingsStore) {
         self.settings = settings
@@ -73,6 +76,8 @@ private struct SettingsView: View {
         )
         _transcriptionModel = State(initialValue: settings.transcriptionModel)
         _transcriptionContext = State(initialValue: settings.transcriptionContext)
+        _transcriptionDelay = State(initialValue: settings.transcriptionDelay)
+        _dictionaryText = State(initialValue: settings.personalDictionary.joined(separator: "\n"))
     }
 
     @ViewBuilder
@@ -114,7 +119,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "OpenAI Realtime",
-                    description: "Streams microphone audio to GPT Transcribe over WebSocket and shows completed turns while you record."
+                    description: "Streams microphone audio to GPT Live Transcribe and displays text as you speak."
                 ) {
                     Text("OpenAI API key (separate from OpenRouter)")
                         .font(.system(size: 11, weight: .semibold))
@@ -127,9 +132,19 @@ private struct SettingsView: View {
                         .liquidGlassSurface(cornerRadius: 11)
 
                     Toggle(
-                        "Use realtime GPT Transcribe",
+                        "Use GPT Live Transcribe",
                         isOn: realtimeTranscriptionEnabledBinding
                     )
+
+                    Picker("Transcription delay", selection: transcriptionDelayBinding) {
+                        ForEach(TranscriptionDelay.allCases, id: \.self) { delay in
+                            Text(delay.title).tag(delay)
+                        }
+                    }
+
+                    Text("Higher delay gives the model more audio context before showing text. The speech-pause threshold stays at 500 ms for every setting.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
 
                     Label(realtimeStatusText, systemImage: realtimeStatusSymbol)
                         .font(.system(size: 11, weight: .medium))
@@ -142,7 +157,7 @@ private struct SettingsView: View {
 
                 section(
                     title: "Transcription",
-                    description: "GPT Transcribe produces the fast live draft; this OpenRouter model remains the saved-audio fallback."
+                    description: "Choose the OpenRouter model used to transcribe saved audio and retry recordings. Live transcription uses GPT Live Transcribe separately."
                 ) {
                     TextField(
                         OpenRouterService.transcriptionModel,
@@ -187,12 +202,40 @@ private struct SettingsView: View {
                             .frame(minHeight: 220)
                             .liquidGlassSurface(cornerRadius: 12)
 
-                        Text("Sent with the audio as GPT Transcribe's free-form context. Use it for minimal cleanup, expected names, technical terms, version numbers, languages, and punctuation style.")
+                        Text("Use these instructions for minimal cleanup, languages, and punctuation style. Add names and technical terms to your personal dictionary below. Long instructions are applied in full after Stop while live preview continues.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+
+                        if !RealtimeTranscriptionService.contextIsValid(transcriptionContext) {
+                            Text("Your full instructions are saved. Live preview uses your personal dictionary; the final transcription applies these instructions after Stop.")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                section(
+                    title: "Personal dictionary",
+                    description: "Add one word or phrase per line to help recognize names, products, and technical vocabulary."
+                ) {
+                    TextEditor(text: dictionaryBinding)
+                        .font(.system(size: 13))
+                        .scrollContentBackground(.hidden)
+                        .padding(8)
+                        .frame(minHeight: 130)
+                        .liquidGlassSurface(cornerRadius: 12)
+
+                    if let dictionaryError {
+                        Text(dictionaryError + " Your last valid dictionary is still saved.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.red)
+                            .accessibilityLabel("Dictionary validation error: " + dictionaryError)
+                    } else {
+                        Text("Saved automatically. Blank lines and duplicate entries are ignored; spelling from the first entry is kept.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
                     }
                 }
-
             }
             .padding(.horizontal, 20)
             .padding(.top, 44)
@@ -252,20 +295,44 @@ private struct SettingsView: View {
         )
     }
 
+    private var transcriptionDelayBinding: Binding<TranscriptionDelay> {
+        Binding(
+            get: { transcriptionDelay },
+            set: { value in
+                transcriptionDelay = value
+                settings.transcriptionDelay = value
+            }
+        )
+    }
+
+    private var dictionaryBinding: Binding<String> {
+        Binding(
+            get: { dictionaryText },
+            set: { value in
+                dictionaryText = value
+                do {
+                    // Normalize pasted CRLF line endings before validating individual terms.
+                    let lines = value.replacingOccurrences(of: "\r\n", with: "\n")
+                        .components(separatedBy: "\n")
+                    try settings.setPersonalDictionary(lines)
+                    dictionaryError = nil
+                } catch {
+                    dictionaryError = error.localizedDescription
+                }
+            }
+        )
+    }
+
     private var realtimeStatusText: String {
         guard realtimeTranscriptionEnabled else {
             return "Live transcription is disabled."
-        }
-        guard isGPTTranscribeSelected else {
-            return "Select GPT Transcribe to activate live transcription."
         }
         guard !openAIAPIKey.trimmingCharacters(
             in: .whitespacesAndNewlines
         ).isEmpty else {
             return "Not active — add an OpenAI API key."
         }
-
-        return "Ready for live GPT Transcribe turns."
+        return "Ready for GPT Live Transcribe."
     }
 
     private var realtimeStatusSymbol: String {
@@ -278,15 +345,7 @@ private struct SettingsView: View {
 
     private var realtimeIsReady: Bool {
         realtimeTranscriptionEnabled &&
-            isGPTTranscribeSelected &&
             !openAIAPIKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
-    private var isGPTTranscribeSelected: Bool {
-        let model = transcriptionModel
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .lowercased()
-        return model == "openai/gpt-transcribe" || model == "gpt-transcribe"
     }
 
     @ViewBuilder

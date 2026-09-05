@@ -19,8 +19,10 @@ swift build -c "$BUILD_CONFIGURATION"
 
 rm -rf "$SRC_APP"
 mkdir -p "$SRC_APP/Contents/MacOS"
+mkdir -p "$SRC_APP/Contents/Resources"
 cp "$INFO_PLIST" "$SRC_APP/Contents/Info.plist"
 cp -f "$BUILD_BIN" "$SRC_APP/Contents/MacOS/$APP_NAME"
+cp "$APP_DIR/Resources/AppIcon.icns" "$SRC_APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --deep --sign - \
   --identifier com.supersamuel.app \

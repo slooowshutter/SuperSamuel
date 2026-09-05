@@ -3,6 +3,19 @@ import XCTest
 @testable import SuperSamuelApp
 
 final class DictationEngineTests: XCTestCase {
+    func testWhisperStrategySelectsWhisperIndependentlyOfAppDefault() async throws {
+        let transport = DictationTransportSpy()
+        let engine = DictationEngine(transport: transport)
+        let result = try await engine.process(
+            apiKey: "key",
+            input: DictationInput(audio: sampleAudio(), strategy: .whisperOnly)
+        )
+        let calls = await transport.recordedCalls()
+        XCTAssertEqual(calls.first?.model, "openai/whisper-large-v3")
+        XCTAssertEqual(result.calls.first?.requestedModel, calls.first?.model)
+        XCTAssertEqual(result.calls.first?.resolvedModel, calls.first?.model)
+    }
+
     func testGeminiAudioBypassesWhisper() async throws {
         let transport = DictationTransportSpy()
         let engine = DictationEngine(transport: transport)
@@ -115,14 +128,15 @@ private actor DictationTransportSpy: DictationTransport {
 
     func performTranscription(
         apiKey: String,
+        model: String,
         audio: RecordedAudio
     ) async throws -> OpenRouterTextResponse {
         calls.append(
-            Call(kind: .whisper, model: nil, hasAudio: true, draftTranscript: nil)
+            Call(kind: .whisper, model: model, hasAudio: true, draftTranscript: nil)
         )
         return OpenRouterTextResponse(
             text: "whisper result",
-            resolvedModel: OpenRouterService.transcriptionModel,
+            resolvedModel: model,
             provider: "Whisper provider",
             usage: nil
         )

@@ -18,6 +18,7 @@ final class TextInsertionService {
         let snapshot = (autoPaste && restoreClipboard) ? clipboard.snapshot() : nil
 
         clipboard.setString(text)
+        let deliveryChangeCount = clipboard.changeCount
 
         if !autoPaste {
             return
@@ -27,7 +28,7 @@ final class TextInsertionService {
 
         if let snapshot {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.55) { [weak self] in
-                self?.clipboard.restore(snapshot)
+                self?.clipboard.restore(snapshot, ifUnchangedSince: deliveryChangeCount)
             }
         }
 

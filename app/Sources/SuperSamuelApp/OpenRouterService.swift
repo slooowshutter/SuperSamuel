@@ -3,6 +3,7 @@ import Foundation
 enum OpenRouterServiceError: LocalizedError {
     case missingAPIKey
     case noSpeechDetected
+    case emptyTranscript
     case requestFailed(String)
     case invalidResponse
 
@@ -11,7 +12,9 @@ enum OpenRouterServiceError: LocalizedError {
         case .missingAPIKey:
             return "Add your OpenRouter API key in Settings before recording."
         case .noSpeechDetected:
-            return "No speech was detected. The recording was kept so you can retry it or move it to Trash."
+            return "No speech was detected. Ready to record again."
+        case .emptyTranscript:
+            return "The transcription service returned no text. The recording was kept so you can retry it or move it to Trash."
         case .requestFailed(let message):
             return "OpenRouter request failed: \(message)"
         case .invalidResponse:
@@ -20,7 +23,7 @@ enum OpenRouterServiceError: LocalizedError {
     }
 }
 
-actor OpenRouterService: DictationTransport {
+actor OpenRouterService: DictationTransport, RecordingTranscriptionService {
     static let transcriptionModel = "openai/gpt-transcribe"
     static let geminiDictationModel = "google/gemini-3.5-flash"
     static let defaultAudioEnhancementModel = "openai/gpt-audio-mini"
@@ -53,11 +56,12 @@ actor OpenRouterService: DictationTransport {
 
     func performTranscription(
         apiKey: String,
+        model: String,
         audio: RecordedAudio
     ) async throws -> OpenRouterTextResponse {
         try await performTranscription(
             apiKey: apiKey,
-            model: Self.transcriptionModel,
+            model: model,
             transcriptionContext: nil,
             audio: audio
         )
@@ -115,7 +119,7 @@ actor OpenRouterService: DictationTransport {
 
         let transcript = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !transcript.isEmpty else {
-            throw OpenRouterServiceError.noSpeechDetected
+            throw OpenRouterServiceError.emptyTranscript
         }
 
         return OpenRouterTextResponse(
@@ -238,7 +242,7 @@ actor OpenRouterService: DictationTransport {
 
         let text = extractText(from: content).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else {
-            throw OpenRouterServiceError.noSpeechDetected
+            throw OpenRouterServiceError.emptyTranscript
         }
 
         return OpenRouterTextResponse(
@@ -247,74 +251,6 @@ actor OpenRouterService: DictationTransport {
             provider: payload["provider"] as? String,
             usage: extractUsage(from: payload)
         )
-    }
-
-    func cleanupTranscript(
-        apiKey: String,
-        model: String,
-        rewriteInstruction: String,
-        rawTranscript: String,
-        screenshotURL: URL? = nil
-    ) async throws -> String {
-        let apiKey = try validatedAPIKey(apiKey)
-        let transcript = rawTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !transcript.isEmpty else {
-            throw OpenRouterServiceError.invalidResponse
-        }
-
-        let selectedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
-        var request = URLRequest(url: chatURL)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 60
-        request.httpBody = try JSONSerialization.data(
-            withJSONObject: [
-                "model": selectedModel.isEmpty ? Self.defaultCleanupModel : selectedModel,
-                "messages": [
-                    [
-                        "role": "system",
-                        "content": """
-                        You convert messy spoken dictation into clean written text.
-                        Treat the raw transcript as the source of truth and rewrite it into natural, readable dictation.
-                        Preserve all concrete meaning, technical details, intent, uncertainty, and important qualifiers.
-                        If a screenshot is attached, use it only to disambiguate visible app names, labels, UI text, filenames, or technical terms.
-                        Never let the screenshot override the transcript.
-                        Do not summarize, answer the transcript, add new facts, or change the meaning.
-                        Return only the cleaned transcript.
-                        """
-                    ],
-                    [
-                        "role": "user",
-                        "content": try buildUserMessageContent(
-                            transcript: transcript,
-                            rewriteInstruction: rewriteInstruction,
-                            screenshotURL: screenshotURL
-                        )
-                    ]
-                ]
-            ],
-            options: []
-        )
-
-        let (data, response) = try await urlSession.data(for: request)
-        try validate(response: response, data: data)
-
-        guard
-            let payload = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-            let choices = payload["choices"] as? [[String: Any]],
-            let message = choices.first?["message"] as? [String: Any],
-            let content = message["content"]
-        else {
-            throw OpenRouterServiceError.invalidResponse
-        }
-
-        let text = extractText(from: content).trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !text.isEmpty else {
-            throw OpenRouterServiceError.invalidResponse
-        }
-
-        return text
     }
 
     private func validatedAPIKey(_ apiKey: String) throws -> String {
@@ -452,41 +388,6 @@ actor OpenRouterService: DictationTransport {
         \(contextSection)
         \(draftSection)
         """
-    }
-
-    private func buildUserMessageContent(
-        transcript: String,
-        rewriteInstruction: String,
-        screenshotURL: URL?
-    ) throws -> Any {
-        let textContent = """
-        Raw transcript to rewrite:
-        \(transcript)
-
-        Rewrite rules:
-        \(rewriteInstruction)
-        """
-
-        guard let screenshotURL else {
-            return textContent
-        }
-
-        return [
-            [
-                "type": "text",
-                "text": """
-                \(textContent)
-
-                Use the attached screenshot only as supporting context. If it conflicts with the transcript, trust the transcript.
-                """
-            ],
-            [
-                "type": "image_url",
-                "image_url": [
-                    "url": try imageDataURL(from: screenshotURL)
-                ]
-            ]
-        ]
     }
 
     private func imageDataURL(from fileURL: URL) throws -> String {

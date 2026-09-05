@@ -1,14 +1,14 @@
 import Foundation
 
-// ponytail: a session still holds an array of chunks. New recordings always
-// write exactly one, but pending recordings already on disk may have several,
-// and looping over N covers both without a migration.
+// Parts stay in capture order, including microphone-recovery segments and
+// legacy recordings with multiple chunks.
 struct RecordingChunk: Codable, Identifiable {
     let id: UUID
     let filename: String
     let createdAt: Date
     var duration: TimeInterval?
     var sizeBytes: Int64?
+    var inputDevice: AudioInputDeviceInfo?
 }
 
 struct RecordingSession: Codable, Identifiable {
@@ -35,6 +35,18 @@ struct RecordingSession: Codable, Identifiable {
     var lastError: String?
     var completedTranscriptID: UUID?
     var inputDevice: AudioInputDeviceInfo?
+    var vocabulary: [String]?
+    var liveTranscriptionModel: String?
+    var liveTranscriptionDelay: String?
+    var liveCaptureContinuous: Bool?
+    var savedCaptureContinuous: Bool?
+    var transcriptSource: String?
+    var requiresFreshTranscription: Bool?
+    var livePreviewRequiresFinalization: Bool?
+
+    var canUseLiveTranscript: Bool {
+        liveCaptureContinuous != false && livePreviewRequiresFinalization != true
+    }
 
     var resolvedTranscriptionModel: String {
         let model = transcriptionModel?
@@ -109,7 +121,10 @@ final class RecordingStore {
 
     func createSession(
         transcriptionModel: String = OpenRouterService.transcriptionModel,
-        transcriptionContext: String = ""
+        transcriptionContext: String = "",
+        vocabulary: [String] = [],
+        liveTranscriptionModel: String? = nil,
+        liveTranscriptionDelay: String? = nil
     ) throws -> RecordingSession {
         try ensureDirectories()
 
@@ -127,7 +142,10 @@ final class RecordingStore {
             screenshotFilename: nil,
             lastError: nil,
             completedTranscriptID: nil,
-            inputDevice: nil
+            inputDevice: nil,
+            vocabulary: vocabulary,
+            liveTranscriptionModel: liveTranscriptionModel,
+            liveTranscriptionDelay: liveTranscriptionDelay
         )
 
         try fileManager.createDirectory(
@@ -178,20 +196,59 @@ final class RecordingStore {
     ) throws {
         try update(sessionID) { session in
             session.inputDevice = device
+            if let index = session.chunks.indices.last {
+                session.chunks[index].inputDevice = device
+            }
         }
+    }
+
+    func setCaptureContinuity(live: Bool, saved: Bool, for sessionID: UUID) throws {
+        try update(sessionID) { session in
+            session.liveCaptureContinuous = (session.liveCaptureContinuous ?? true) && live
+            session.savedCaptureContinuous = (session.savedCaptureContinuous ?? true) && saved
+        }
+    }
+
+    func setTranscriptSource(_ source: String, for sessionID: UUID) throws {
+        try update(sessionID) { $0.transcriptSource = source }
+    }
+
+    func requireSavedAudioFinalization(for sessionID: UUID) throws {
+        try update(sessionID) { $0.livePreviewRequiresFinalization = true }
     }
 
     func prepareForProcessing(
         sessionID: UUID,
         transcriptionModel: String = OpenRouterService.transcriptionModel,
         transcriptionContext: String = "",
+        vocabulary: [String] = [],
+        liveTranscriptionModel: String? = nil,
+        liveTranscriptionDelay: String? = nil,
+        forceRetranscription: Bool = false,
         screenshotSourceURL: URL?
     ) throws {
         var session = try load(sessionID)
+        let context = normalizedTranscriptionContext(transcriptionContext)
+        let screenshotChanged = screenshotSourceURL.map { source in
+            guard let existing = screenshotURL(for: session) else { return true }
+            return !fileManager.contentsEqual(atPath: source.path, andPath: existing.path)
+        } ?? false
+        if forceRetranscription ||
+            session.resolvedTranscriptionModel != (normalized(transcriptionModel) ?? OpenRouterService.transcriptionModel) ||
+            session.resolvedTranscriptionContext != context ||
+            (session.vocabulary ?? []) != vocabulary || screenshotChanged ||
+            (liveTranscriptionModel != nil && liveTranscriptionModel != session.liveTranscriptionModel) ||
+            (liveTranscriptionDelay != nil && liveTranscriptionDelay != session.liveTranscriptionDelay)
+        {
+            try invalidateDerivedResults(sessionID: sessionID)
+            session.transcriptSource = nil
+        }
         session.transcriptionModel = transcriptionModel
-        session.transcriptionContext = normalizedTranscriptionContext(
-            transcriptionContext
-        )
+        session.transcriptionContext = context
+        session.vocabulary = vocabulary
+        session.requiresFreshTranscription = forceRetranscription
+        if let liveTranscriptionModel { session.liveTranscriptionModel = liveTranscriptionModel }
+        if let liveTranscriptionDelay { session.liveTranscriptionDelay = liveTranscriptionDelay }
         session.status = .ready
         session.updatedAt = Date()
         session.lastError = nil
@@ -200,8 +257,10 @@ final class RecordingStore {
             let filename = "screenshot.jpg"
             let destination = directory(for: sessionID)
                 .appendingPathComponent(filename)
-            try? fileManager.removeItem(at: destination)
-            try fileManager.copyItem(at: screenshotSourceURL, to: destination)
+            if screenshotSourceURL.standardizedFileURL != destination.standardizedFileURL {
+                try? fileManager.removeItem(at: destination)
+                try fileManager.copyItem(at: screenshotSourceURL, to: destination)
+            }
             session.screenshotFilename = filename
         }
 
@@ -288,7 +347,7 @@ final class RecordingStore {
             if session.lastError == "OpenRouter returned an invalid response." {
                 var migratedSession = session
                 migratedSession.lastError =
-                    "No speech was detected in this legacy recording. It was kept so you can retry it or move it to Trash."
+                    "The previous transcription returned no usable text. The recording was kept so you can retry it or move it to Trash."
                 migratedSession.updatedAt = Date()
                 try save(migratedSession)
                 sessions.append(migratedSession)
@@ -343,10 +402,11 @@ final class RecordingStore {
     }
 
     func audioChunks(for session: RecordingSession) throws -> [(RecordingChunk, RecordedAudio)] {
-        let chunks = session.chunks.compactMap { chunk -> (RecordingChunk, RecordedAudio)? in
+        let chunks = try session.chunks.compactMap { chunk -> (RecordingChunk, RecordedAudio)? in
             let url = audioURL(for: session.id, chunk: chunk)
             guard fileSize(at: url) > 0 else {
-                return nil
+                if session.savedCaptureContinuous == false { return nil }
+                throw RecordingStoreError.noAudio
             }
 
             let format = url.pathExtension.lowercased()
@@ -474,6 +534,21 @@ final class RecordingStore {
         )
     }
 
+    func saveLivePartialTranscript(_ text: String, sessionID: UUID) throws {
+        try text.write(
+            to: directory(for: sessionID).appendingPathComponent("live-partial-transcript.txt"),
+            atomically: true, encoding: .utf8
+        )
+    }
+
+    func livePartialTranscript(sessionID: UUID) -> String? {
+        guard let text = try? String(
+            contentsOf: directory(for: sessionID).appendingPathComponent("live-partial-transcript.txt"),
+            encoding: .utf8
+        ) else { return nil }
+        return normalized(text)
+    }
+
     func saveFinalTranscript(_ text: String, sessionID: UUID) throws {
         try text.write(
             to: directory(for: sessionID)
@@ -487,6 +562,23 @@ final class RecordingStore {
         let url = directory(for: sessionID)
         if fileManager.fileExists(atPath: url.path) {
             try fileManager.removeItem(at: url)
+        }
+    }
+
+    private func invalidateDerivedResults(sessionID: UUID) throws {
+        let files = try fileManager.contentsOfDirectory(
+            at: directory(for: sessionID), includingPropertiesForKeys: nil
+        )
+        for file in files {
+            let name = file.lastPathComponent
+            if name == "draft-transcript.txt" || name == "final-transcript.txt" ||
+                name == "live-partial-transcript.txt" ||
+                (name.hasPrefix("raw-") && name.hasSuffix(".txt")) ||
+                (name.hasPrefix("cleaned-") && name.hasSuffix(".txt")) ||
+                (name.hasPrefix("no-speech-") && name.hasSuffix(".marker"))
+            {
+                try fileManager.removeItem(at: file)
+            }
         }
     }
 

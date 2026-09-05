@@ -110,8 +110,39 @@ final class SettingsStoreTests: XCTestCase {
         settings.transcriptionModel = "mistralai/voxtral-mini-transcribe"
         XCTAssertEqual(
             settings.realtimeTranscriptionAvailability,
-            .unsupportedModel
+            .available
         )
-        XCTAssertFalse(settings.canUseRealtimeGPTTranscribe)
+        XCTAssertTrue(settings.canUseRealtimeGPTTranscribe)
     }
+
+    func testDelayDefaultsAndEveryPresetPersists() {
+        let suiteName = "SuperSamuelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suiteName))
+        XCTAssertEqual(settings.transcriptionDelay, .xhigh)
+        for delay in TranscriptionDelay.allCases {
+            settings.transcriptionDelay = delay
+            let reloaded = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suiteName))
+            XCTAssertEqual(reloaded.transcriptionDelay, delay)
+        }
+        defaults.set("unsupported", forKey: "realtimeTranscriptionDelay")
+        XCTAssertEqual(settings.transcriptionDelay, .xhigh)
+    }
+
+    func testDictionaryNormalizesAndRejectsInvalidEditsWithoutLosingSavedTerms() throws {
+        let suiteName = "SuperSamuelTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let settings = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suiteName))
+        try settings.setPersonalDictionary(["  SuperSamuel  ", "", "supersamuel", "Café", "Cafe\u{301}", "GPT Live Transcribe"])
+        XCTAssertEqual(settings.personalDictionary, ["SuperSamuel", "Café", "GPT Live Transcribe"])
+        for invalid in ["<tag>", "a>b", "a\nb", "a\rb", "a\tb", "a\u{0}b", "a\u{2028}b"] {
+            XCTAssertThrowsError(try settings.setPersonalDictionary(["New term", invalid]))
+            XCTAssertEqual(settings.personalDictionary, ["SuperSamuel", "Café", "GPT Live Transcribe"])
+        }
+        let reloaded = SettingsStore(defaults: defaults, credentials: CredentialStore(service: suiteName))
+        XCTAssertEqual(reloaded.personalDictionary, settings.personalDictionary)
+    }
+
 }
