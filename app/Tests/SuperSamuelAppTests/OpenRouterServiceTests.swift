@@ -493,7 +493,7 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testProcessorPreservesLiveTextWhenSavedAudioReportsNoSpeech() async throws {
+    func testProcessorPreservesAudioWhenProviderReturnsEmptyText() async throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -530,18 +530,16 @@ final class OpenRouterServiceTests: XCTestCase {
             return (response, Data(#"{"text":""}"#.utf8))
         }
 
-        let result = try await processor.process(
-            sessionID: session.id,
-            apiKey: "test-key",
-            lastResortTranscript: "Bruh, dude.",
-            onProgress: { _ in }
-        )
-
-        XCTAssertEqual(result.transcript, "Bruh, dude.")
-        XCTAssertEqual(
-            try historyStore.item(id: session.id)?.text,
-            "Bruh, dude."
-        )
+        do {
+            _ = try await processor.process(
+                sessionID: session.id,
+                apiKey: "test-key",
+                onProgress: { _ in }
+            )
+            XCTFail("Uncertain empty output must preserve the recording")
+        } catch OpenRouterServiceError.emptyTranscript {}
+        XCTAssertNoThrow(try recordingStore.load(session.id))
+        XCTAssertNil(try historyStore.item(id: session.id))
     }
 
     @MainActor
@@ -669,6 +667,280 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testExplicitRetryReplacesLegacyNoSpeechCacheWithNewConfiguration() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let history = TranscriptHistoryStore(rootDirectory: root)
+        let session = try store.createSession(transcriptionContext: "Old instruction", vocabulary: ["Oldword"])
+        let chunk = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
+        try store.markChunkAsNoSpeech(sessionID: session.id, chunkID: chunk.id)
+        try store.saveDraftTranscript("Wrong draft", sessionID: session.id)
+        try store.saveFinalTranscript("Wrong final", sessionID: session.id)
+        try store.prepareForProcessing(
+            sessionID: session.id, transcriptionModel: "openai/whisper-large-v3",
+            transcriptionContext: "Keep names", vocabulary: ["SuperSamuel"],
+            forceRetranscription: true, screenshotSourceURL: nil
+        )
+        let count = LockedCounter()
+        URLProtocolStub.handler = { request in
+            _ = count.increment()
+            let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: requestBody(request)!) as? [String: Any])
+            XCTAssertEqual(payload["model"] as? String, "openai/whisper-large-v3")
+            let provider = payload["provider"] as? [String: Any]
+            let options = provider?["options"] as? [String: Any]
+            let openAI = options?["openai"] as? [String: Any]
+            let prompt = try XCTUnwrap(openAI?["prompt"] as? String)
+            XCTAssertTrue(prompt.contains("Keep names"))
+            XCTAssertTrue(prompt.contains("SuperSamuel"))
+            XCTAssertFalse(prompt.contains("Oldword"))
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"text":"SuperSamuel"}"#.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration)))
+        let result = try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+        XCTAssertEqual(result.transcript, "SuperSamuel")
+        XCTAssertEqual(count.value, 1)
+        let metadata = try XCTUnwrap(history.metadata(id: session.id))
+        XCTAssertEqual(metadata.workflow.transcriptionModel, "openai/whisper-large-v3")
+        XCTAssertEqual(metadata.workflow.vocabulary, ["SuperSamuel"])
+    }
+
+    @MainActor
+    func testLongContextPreviewIsNeverFinalAndFullInstructionsReachSavedAudio() async throws {
+        for hasCachedPreview in [false, true] {
+            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let store = RecordingStore(rootDirectory: root)
+            let history = TranscriptHistoryStore(rootDirectory: root)
+            let fullContext = String(repeating: "Keep every spoken word. ", count: 50) + "Final instruction must survive."
+            let session = try store.createSession(
+                transcriptionModel: "openai/whisper-large-v3",
+                transcriptionContext: fullContext, vocabulary: ["SuperSamuel"]
+            )
+            _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
+            try store.requireSavedAudioFinalization(for: session.id)
+            // Reload the manifest to exercise recovery, not just an in-memory flag.
+            let reloadedStore = RecordingStore(rootDirectory: root)
+            XCTAssertEqual(try reloadedStore.load(session.id).livePreviewRequiresFinalization, true)
+            if hasCachedPreview {
+                try store.saveDraftTranscript("Preview draft", sessionID: session.id)
+                try store.saveFinalTranscript("Preview final", sessionID: session.id)
+                try store.setTranscriptSource("live", for: session.id)
+            }
+            let count = LockedCounter()
+            URLProtocolStub.handler = { request in
+                _ = count.increment()
+                let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: requestBody(request)!) as? [String: Any])
+                let provider = payload["provider"] as? [String: Any]
+                let options = provider?["options"] as? [String: Any]
+                let openAI = options?["openai"] as? [String: Any]
+                let prompt = try XCTUnwrap(openAI?["prompt"] as? String)
+                XCTAssertTrue(prompt.contains(fullContext))
+                XCTAssertTrue(prompt.contains("SuperSamuel"))
+                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"text":"Final result with full instructions."}"#.utf8))
+            }
+            let configuration = URLSessionConfiguration.ephemeral
+            configuration.protocolClasses = [URLProtocolStub.self]
+            let processor = RecordingProcessor(
+                recordingStore: reloadedStore, historyStore: history,
+                openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration))
+            )
+            let result = try await processor.process(
+                sessionID: session.id, apiKey: "test-key",
+                preferredTranscript: "Live preview", onProgress: { _ in }
+            )
+            XCTAssertEqual(count.value, 1)
+            XCTAssertEqual(result.transcript, "Final result with full instructions.")
+            XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptionContext, fullContext)
+            XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptSource, "saved-audio")
+        }
+    }
+
+    @MainActor
+    func testIncompleteLiveCaptureUsesAllSavedPartsAndRejectsAnEmptyPart() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let history = TranscriptHistoryStore(rootDirectory: root)
+        let session = try store.createSession()
+        _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
+        _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 12_000)
+        try store.setCaptureContinuity(live: false, saved: true, for: session.id)
+        let count = LockedCounter()
+        URLProtocolStub.handler = { request in
+            let body = count.increment() == 1 ? #"{"text":"First part"}"# : #"{"text":""}"#
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(body.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration)))
+        do {
+            _ = try await processor.process(sessionID: session.id, apiKey: "key", preferredTranscript: "Only live fragment", onProgress: { _ in })
+            XCTFail("The second part has an uncertain transcription")
+        } catch OpenRouterServiceError.emptyTranscript {}
+        XCTAssertEqual(count.value, 2)
+        XCTAssertNil(try history.item(id: session.id))
+        XCTAssertEqual(try store.audioChunks(for: store.load(session.id)).count, 2)
+    }
+
+    @MainActor
+    func testVerifiedSilentRecordingSkipsUploadButInterruptedSilenceStaysRecoverable() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let history = TranscriptHistoryStore(rootDirectory: root)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration)))
+        URLProtocolStub.handler = { _ in
+            XCTFail("Digital silence does not need a provider request")
+            throw URLError(.badServerResponse)
+        }
+        for continuous in [true, false] {
+            let session = try store.createSession()
+            _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 0)
+            try store.setCaptureContinuity(live: false, saved: continuous, for: session.id)
+            do {
+                _ = try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+                XCTFail("Silent audio does not produce a transcript")
+            } catch OpenRouterServiceError.noSpeechDetected {
+                XCTAssertTrue(continuous)
+            } catch RecordingProcessingError.incompleteSavedCapture {
+                XCTAssertFalse(continuous)
+            }
+            XCTAssertNoThrow(try store.load(session.id))
+        }
+    }
+
+    @MainActor
+    func testInterruptedSavedCaptureKeepsPartialTranscriptAndSourceAudio() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let history = TranscriptHistoryStore(rootDirectory: root)
+        let session = try store.createSession()
+        _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
+        _ = try store.beginChunk(in: session.id)
+        try store.setCaptureContinuity(live: false, saved: false, for: session.id)
+        URLProtocolStub.handler = { request in
+            (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"text":"Captured words"}"#.utf8))
+        }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration)))
+        do {
+            _ = try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+            XCTFail("Incomplete recording must remain in recovery")
+        } catch RecordingProcessingError.incompleteSavedCapture {}
+        XCTAssertEqual(store.draftTranscript(sessionID: session.id), "Captured words")
+        XCTAssertNil(store.finalTranscript(sessionID: session.id))
+        XCTAssertNil(try history.item(id: session.id))
+        XCTAssertEqual(try store.audioChunks(for: store.load(session.id)).count, 1)
+    }
+
+    @MainActor
+    func testExplicitRetryTranscribesPreviouslyVerifiedSilence() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let history = TranscriptHistoryStore(rootDirectory: root)
+        let session = try store.createSession()
+        _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 0)
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [URLProtocolStub.self]
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration)))
+        URLProtocolStub.handler = { _ in
+            XCTFail("Initial verified silence skips upload")
+            throw URLError(.badServerResponse)
+        }
+        do {
+            _ = try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+            XCTFail("Initial silence produces a no-speech outcome")
+        } catch OpenRouterServiceError.noSpeechDetected {}
+
+        try store.prepareForProcessing(sessionID: session.id, forceRetranscription: true, screenshotSourceURL: nil)
+        let count = LockedCounter()
+        URLProtocolStub.handler = { request in
+            _ = count.increment()
+            return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"text":"Fresh recognition"}"#.utf8))
+        }
+        let result = try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+        XCTAssertEqual(count.value, 1)
+        XCTAssertEqual(result.transcript, "Fresh recognition")
+    }
+
+    @MainActor
+    func testCancellationDuringArchiveKeepsPendingSourceAudio() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let copyStarted = expectation(description: "Background archive copy started")
+        let manager = PausedArchiveFileManager(started: { copyStarted.fulfill() })
+        let history = TranscriptHistoryStore(fileManager: manager, rootDirectory: root)
+        let session = try store.createSession()
+        _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: OpenRouterService())
+        let attempt = Task {
+            try await processor.process(sessionID: session.id, apiKey: "unused", preferredTranscript: "Live words", onProgress: { _ in })
+        }
+        await fulfillment(of: [copyStarted], timeout: 3)
+        attempt.cancel()
+        manager.resume()
+        do {
+            _ = try await attempt.value
+            XCTFail("Cancelled archival must not complete the pending session")
+        } catch is CancellationError {}
+        XCTAssertNotEqual(try store.load(session.id).status, .completed)
+        XCTAssertEqual(try store.audioChunks(for: store.load(session.id)).count, 1)
+        XCTAssertNil(try history.item(id: session.id))
+    }
+
+    @MainActor
+    func testCancelledProviderResponseCannotOverwriteANewRetry() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = RecordingStore(rootDirectory: root)
+        let history = TranscriptHistoryStore(rootDirectory: root)
+        let session = try store.createSession(transcriptionContext: "Old instruction")
+        let chunk = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
+        let firstStarted = expectation(description: "Original provider request started")
+        let retryStarted = expectation(description: "Retry provider request started")
+        let provider = SuspendedTranscriptionService(started: [firstStarted, retryStarted])
+        let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: provider)
+        let original = Task {
+            try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+        }
+        await fulfillment(of: [firstStarted], timeout: 3)
+        original.cancel()
+        try store.prepareForProcessing(
+            sessionID: session.id, transcriptionContext: "New instruction",
+            forceRetranscription: true, screenshotSourceURL: nil
+        )
+        let retry = Task {
+            try await processor.process(sessionID: session.id, apiKey: "key", onProgress: { _ in })
+        }
+        await fulfillment(of: [retryStarted], timeout: 3)
+
+        // This transport deliberately succeeds after cancellation, as a response
+        // already queued for delivery can do before the caller resumes.
+        await provider.completeNext(with: "Stale result")
+        do {
+            _ = try await original.value
+            XCTFail("The old attempt must stop before writing any derived result")
+        } catch is CancellationError {}
+        XCTAssertNil(store.cachedTranscript(sessionID: session.id, chunkID: chunk.id, cleaned: false))
+        XCTAssertNil(store.draftTranscript(sessionID: session.id))
+        XCTAssertNil(store.finalTranscript(sessionID: session.id))
+
+        await provider.completeNext(with: "Fresh result")
+        let result = try await retry.value
+        XCTAssertEqual(result.transcript, "Fresh result")
+        XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptionContext, "New instruction")
+    }
+
+    @MainActor
     private func addAudibleChunk(
         to store: RecordingStore,
         sessionID: UUID,
@@ -790,5 +1062,51 @@ private final class LockedCounter: @unchecked Sendable {
             count += 1
             return count
         }
+    }
+}
+
+private final class PausedArchiveFileManager: FileManager, @unchecked Sendable {
+    private let started: () -> Void
+    private let condition = NSCondition()
+    private var canContinue = false
+
+    init(started: @escaping () -> Void) {
+        self.started = started
+        super.init()
+    }
+
+    func resume() {
+        condition.lock()
+        canContinue = true
+        condition.signal()
+        condition.unlock()
+    }
+
+    override func copyItem(at srcURL: URL, to dstURL: URL) throws {
+        started()
+        condition.lock()
+        while !canContinue { condition.wait() }
+        condition.unlock()
+        try super.copyItem(at: srcURL, to: dstURL)
+    }
+}
+
+private actor SuspendedTranscriptionService: RecordingTranscriptionService {
+    private var started: [XCTestExpectation]
+    private var responses: [CheckedContinuation<String, Error>] = []
+
+    init(started: [XCTestExpectation]) { self.started = started }
+
+    func transcribe(
+        apiKey: String, model: String, transcriptionContext: String?, audio: RecordedAudio
+    ) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            responses.append(continuation)
+            started.removeFirst().fulfill()
+        }
+    }
+
+    func completeNext(with text: String) {
+        responses.removeFirst().resume(returning: text)
     }
 }

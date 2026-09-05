@@ -1,9 +1,55 @@
 import Foundation
 import Security
 
+enum TranscriptionDelay: String, CaseIterable, Codable {
+    case minimal, low, medium, high, xhigh
+
+    var title: String {
+        switch self {
+        case .minimal: return "Minimal"
+        case .low: return "Low"
+        case .medium: return "Medium"
+        case .high: return "High"
+        case .xhigh: return "X-high"
+        }
+    }
+}
+
+enum PersonalDictionary {
+    static func normalizedEntries(_ entries: [String]) throws -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        for (index, entry) in entries.enumerated() {
+            let trimmed = entry.trimmingCharacters(in: .whitespaces)
+            let unsupported = CharacterSet(charactersIn: "<>")
+                .union(.newlines).union(.controlCharacters)
+            guard trimmed.rangeOfCharacter(from: unsupported) == nil
+            else {
+                throw ValidationError.invalidCharacters(line: index + 1)
+            }
+            guard !trimmed.isEmpty else { continue }
+            let identity = trimmed.precomposedStringWithCanonicalMapping.lowercased()
+            if seen.insert(identity).inserted {
+                result.append(trimmed)
+            }
+        }
+        return result
+    }
+
+    enum ValidationError: LocalizedError {
+        case invalidCharacters(line: Int)
+
+        var errorDescription: String? {
+            switch self {
+            case .invalidCharacters(let line):
+                return "Line \(line) contains an unsupported character. Use one word or phrase per line, without <, >, tabs, or control characters."
+            }
+        }
+    }
+}
+
 enum RealtimeTranscriptionAvailability: Equatable {
     case disabled
-    case unsupportedModel
     case missingOpenAIAPIKey
     case available
 }
@@ -14,6 +60,8 @@ final class SettingsStore {
         static let autoPaste = "autoPaste"
         static let restoreClipboard = "restoreClipboard"
         static let realtimeTranscriptionEnabled = "realtimeTranscriptionEnabled"
+        static let transcriptionDelay = "realtimeTranscriptionDelay"
+        static let personalDictionary = "personalDictionary"
         static let legacyOpenRouterAPIKey = "openRouterAPIKey"
         static let transcriptionModel = "openRouterTranscriptionModel"
         static let transcriptionContext = "openRouterTranscriptionContext"
@@ -80,6 +128,23 @@ final class SettingsStore {
         set { defaults.set(newValue, forKey: Keys.realtimeTranscriptionEnabled) }
     }
 
+    var transcriptionDelay: TranscriptionDelay {
+        get {
+            TranscriptionDelay(rawValue: defaults.string(forKey: Keys.transcriptionDelay) ?? "")
+                ?? .xhigh
+        }
+        set { defaults.set(newValue.rawValue, forKey: Keys.transcriptionDelay) }
+    }
+
+    var personalDictionary: [String] {
+        defaults.stringArray(forKey: Keys.personalDictionary) ?? []
+    }
+
+    func setPersonalDictionary(_ entries: [String]) throws {
+        let normalized = try PersonalDictionary.normalizedEntries(entries)
+        defaults.set(normalized, forKey: Keys.personalDictionary)
+    }
+
     var transcriptionModel: String {
         get {
             let value = defaults.string(forKey: Keys.transcriptionModel)?
@@ -120,10 +185,6 @@ final class SettingsStore {
             return .disabled
         }
 
-        let model = transcriptionModel.lowercased()
-        guard model == "openai/gpt-transcribe" || model == "gpt-transcribe" else {
-            return .unsupportedModel
-        }
         guard hasOpenAIAPIKey else {
             return .missingOpenAIAPIKey
         }
@@ -136,6 +197,8 @@ final class SettingsStore {
             Keys.autoPaste: true,
             Keys.restoreClipboard: true,
             Keys.realtimeTranscriptionEnabled: true,
+            Keys.transcriptionDelay: TranscriptionDelay.xhigh.rawValue,
+            Keys.personalDictionary: [String](),
             Keys.transcriptionModel: OpenRouterService.transcriptionModel,
             Keys.transcriptionContext: OpenRouterService.defaultTranscriptionInstruction
         ])

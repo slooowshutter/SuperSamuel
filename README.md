@@ -5,23 +5,33 @@ SuperSamuel is a small native macOS dictation app:
 - Press `Option+Space` to start and stop recording.
 - Record locally as compact 16 kHz mono AAC audio.
 - Optionally stream a 24 kHz PCM sidecar directly to OpenAI's Realtime API,
-  using `gpt-transcribe` and showing the transcript in the recording overlay.
+  using `gpt-live-transcribe` and showing the transcript in the recording overlay.
 - Keep the local recording and configurable OpenRouter transcription path,
   defaulting to `openai/gpt-transcribe`, as the durable fallback.
 - Paste the result back into the app that was active while dictating.
 - Optionally attach a screenshot as context. Visible text is extracted locally
   and added to the transcription instructions.
 
-Realtime transcription uses a direct authenticated WebSocket connection. Server
-voice activity detection commits a turn after 500 ms of detected silence, so
-completed phrases appear while recording. Releasing the hotkey commits any
-remaining audio immediately.
+Realtime transcription uses a direct authenticated WebSocket connection. A local
+PCM speech-pause detector commits a turn after 500 ms of low-energy audio following
+speech. Stop explicitly commits remaining audio and waits for all committed turns.
+The deployed `gpt-live-transcribe` API rejects server-side turn detection, so the
+session uses `turn_detection: null`; the 500 ms threshold stays in the capture path.
 
 The recording overlay keeps the complete live transcript in a scrollable area,
 shows about five lines at its default size, and can be resized by dragging its
-bottom-right resize grip. `gpt-transcribe` does not support the Realtime API's
-`audio.input.transcription.delay` presets; attempting to send one causes the
-session update to be rejected, so SuperSamuel leaves that parameter unset.
+bottom-right resize grip. Settings includes the persistent GPT Live Transcribe
+delay presets **Minimal**, **Low**, **Medium**, **High**, and **X-high** (default).
+Model delay and the 500 ms speech-pause threshold are separate controls; presets
+are not converted into estimated milliseconds. Dictionary, instructions, and
+delay changes apply to the next recording. Screenshot updates retain that
+recording's configuration. The deployed live API accepts up to 1,024 characters
+of instructions plus screenshot text. With longer context, live preview continues
+using a short general transcription prompt and the personal dictionary. After
+Stop, the saved audio is transcribed with the full instructions and screenshot.
+The overlay explains this mode; context is never truncated and the preview is
+never delivered as the final result. Finalization takes an additional saved-audio
+request in this mode.
 
 On macOS 26 and newer, the compact notification-style recording overlay and
 settings window use untinted native **clear Liquid Glass** across their full
@@ -53,6 +63,10 @@ From the repository root:
 ```
 
 The script builds, signs, installs, and opens `~/Applications/SuperSamuel.app`.
+It bundles `app/Resources/AppIcon.icns` so macOS search and Finder show the
+SuperSamuel portrait used in Conductor's sidebar. The original 128×128 PNG is
+kept beside it; the ICNS includes standard and Retina sizes with crisp pixel-art
+scaling.
 It uses an optimized release build by default. For a faster local rebuild:
 
 ```bash
@@ -71,12 +85,14 @@ swift build
 1. Open the `SS` menu-bar item.
 2. Choose **Settings…**
 3. Enter your OpenRouter API key. It is stored in the macOS Keychain.
-4. Enter an OpenAI API key and leave **Use realtime GPT Transcribe** enabled to
+4. Enter an OpenAI API key and leave **Use GPT Live Transcribe** enabled to
    show live transcription. This key is stored in a separate Keychain entry.
-5. Optionally change the fallback model from `openai/gpt-transcribe`. Realtime
-   is active only while this model is selected.
-6. Edit the transcription instructions to match your dictation style and
-   expected terminology.
+5. Select the live transcription delay. Optionally change the saved-audio model
+   from `openai/gpt-transcribe`; it is independent of the live model.
+6. Edit transcription instructions for language, punctuation, and cleanup style.
+7. Add names and phrases to **Personal dictionary**, one per line. Entries are
+   trimmed and deduplicated. Invalid characters show an error and leave the last
+   valid dictionary saved.
 
 The default transcription model is:
 
@@ -84,8 +100,9 @@ The default transcription model is:
 openai/gpt-transcribe
 ```
 
-SuperSamuel sends the instructions as GPT Transcribe's free-form `prompt`, both
-for the direct Realtime session and for the OpenRouter fallback. GPT Transcribe
+SuperSamuel sends instructions as a free-form `prompt` for both the direct
+Realtime session and the OpenRouter fallback. Dictionary entries are sent as live
+`keywords` and included as vocabulary in the fallback prompt. GPT Transcribe
 can use that context for light cleanup and style guidance, but it remains a
 transcription model: the instructions do not alter the audio waveform, and
 large semantic rewrites are not guaranteed. Screenshot text is extracted
@@ -95,7 +112,11 @@ does not send it through a separate cleanup model before pasting.
 
 ## Headless dictation benchmark
 
-The isolated benchmark runner compares the same audio through:
+The isolated benchmark runner compares the same audio through the following
+strategies. Its Whisper draft explicitly uses `openai/whisper-large-v3`, independent
+of the app's saved-audio default. Reports record requested and resolved models
+for each call:
+
 
 - Whisper only
 - Whisper followed by Gemini with transcript text only
@@ -172,7 +193,7 @@ SuperSamuel may request:
 
 ```text
 record durable M4A audio + best-effort PCM sidecar
-  → OpenAI Realtime WebSocket using gpt-transcribe
+  → OpenAI Realtime WebSocket using gpt-live-transcribe
     → live transcript in the recording overlay
     → final transcript
   → if realtime is disabled or unavailable:
@@ -189,8 +210,13 @@ history. They remain there until history is explicitly cleared.
 The waveform is calculated from `AVAudioRecorder` metering while the durable AAC
 file is written. A separate, best-effort audio engine produces the PCM stream;
 it never replaces the saved recording. The recorder and streaming engine are
-recreated for every session so microphone hardware changes after sleep or lock
-do not reuse a stale audio route.
+recreated for every session. During recording, device changes, recorder failures,
+and missing PCM samples are monitored separately from silence. The live engine
+and converter are rebuilt after route changes. An interrupted live stream forces
+saved-audio transcription when stopped. If local capture also stops or changes
+microphones, new files preserve the recorded parts and the overlay warns about
+missing audio. Partial results remain recoverable and are not automatically pasted
+or archived as complete.
 
 ## Recording recovery
 
@@ -206,6 +232,8 @@ Each recording has its own folder containing:
 - A JSON manifest
 - Cached transcript parts (legacy recordings may also contain cleaned parts)
 - The saved realtime or fallback draft in `draft-transcript.txt`
+- Any incomplete live result in `live-partial-transcript.txt`, kept separately
+  from reusable transcription caches
 - The final transcript while processing completes
 - Optional screenshot context
 
@@ -218,13 +246,22 @@ the oldest unsent recording and offers:
 - **Move to Trash**
 
 The menu-bar **Unsent Recordings** submenu also supports sending, revealing the
-folder in Finder, or moving it to Trash after confirmation. The recording
-manifest includes the selected input device, transcription model, and
-instructions chosen for that recording. New recordings remain blocked while
-unsent recordings exist.
+folder in Finder, or moving it directly to macOS Trash. Individual Trash actions
+in the menu, overlay, and recovery dialog do not ask for another confirmation.
+**Keep for Later** allows new recordings while older sessions remain in this menu.
+The manifest records model, instructions, dictionary, live delay, capture
+continuity, and the microphone used for each recorded part.
 
-If processing fails, completed parts remain cached and the original audio stays
-available for retry.
+Explicit **Retry** or **Send Recording** transcribes the saved audio afresh using
+current settings, including recordings previously classified as no speech.
+Compatible interrupted processing can reuse successful parts. Changing the
+model, instructions, dictionary, or screenshot context invalidates derived
+transcripts while preserving audio.
+
+Independently verified silent audio returns the app to Ready and remains available
+in Unsent Recordings. An empty provider response alone is treated as uncertain:
+the audio is kept for recovery, and a partial live fragment is not substituted as
+a complete result.
 
 Successfully processed text is stored under:
 
@@ -242,7 +279,9 @@ Every new transcript has its own UUID-named folder containing:
   version, and macOS version
 - The original recording manifest and optional screenshot context
 
-The **Transcript History** submenu shows recent transcript previews. Each entry
+Archiving and history scanning run in the background. Recent history entries are
+cached between menu openings. The **Transcript History** submenu shows recent
+transcript previews. Each entry
 offers **Copy Transcript** and **Reveal Recording and Transcript in Finder**.
 Older flat JSON history entries remain readable, while new entries use the
 complete folder format. History remains until explicitly cleared; clearing it
@@ -254,7 +293,8 @@ With realtime enabled, SuperSamuel streams 24 kHz mono PCM to OpenAI while also
 writing its compact 32 kbps M4A recording (roughly 14 MB/hour). If realtime is
 disabled, cannot connect, or cannot complete, the durable recording is sent
 through OpenRouter's base64 JSON transcription path. Successful results are
-cached so a retry does not repeat completed work.
+cached for compatible interrupted processing. An explicit user retry always
+requests fresh transcription.
 
 Official references:
 
@@ -263,21 +303,41 @@ Official references:
 - [OpenAI Realtime transcription](https://developers.openai.com/api/docs/guides/realtime-transcription)
 - [OpenAI Realtime WebSocket](https://developers.openai.com/api/docs/guides/realtime-websocket)
 
+## Verification
+
+Run automated checks:
+
+```bash
+swift test --package-path app
+swift build --package-path app -c release
+uv run --with-requirements benchmark/requirements.txt python -m unittest discover -s benchmark
+```
+
+See [verification results](VALIDATION.md) for deployed API compatibility checks,
+measured synthetic timings, and remaining hardware checks.
+
 ## Manual verification
 
 - Start and stop recording with `Option+Space`.
 - Confirm the waveform and timer update while recording.
-- With an OpenAI key configured, pause for about 500 ms and confirm completed
-  phrases appear in the bottom of the recording overlay.
+- With an OpenAI key configured, pause for about 500 ms and confirm the turn is
+  committed locally; displayed text also depends on the selected model delay.
+- Test all five delay presets and Stop during pending transcription. Measure
+  text-display and Stop-to-paste latency; do not infer timing from preset names.
 - Disable realtime and confirm the saved-recording path still transcribes.
 - Interrupt the network during recording and confirm the saved M4A is used as
   the fallback.
 - Cancel during transcription and confirm nothing is pasted.
 - Confirm the cancelled recording appears under **Unsent Recordings**.
-- Relaunch with an unsent recording and test Send, Keep, Reveal, and Delete.
+- Relaunch with an unsent recording and test Send, Keep, Reveal, and Trash.
+- Choose Keep for Later and confirm a new recording can start.
+- Switch or disconnect the microphone during speech. Check per-part microphone
+  metadata, preserved audio, the interruption warning, and saved-audio fallback.
+- Record silence, then retry a failed recording after changing its dictionary.
 - Confirm transcription instructions affect filler removal and expected terms.
 - Test automatic paste in Notes, a browser textarea, and a code editor.
-- Test clipboard restoration.
+- Test clipboard restoration, including copying something else before the
+  delayed restoration runs; the newer copy must survive.
 - Test screenshot context with locally extracted OCR text.
 - Quit during recording and confirm the saved recording appears after relaunch.
 - Confirm completed transcripts appear in **Transcript History**.

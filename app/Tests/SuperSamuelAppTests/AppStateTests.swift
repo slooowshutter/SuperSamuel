@@ -3,17 +3,13 @@ import XCTest
 
 @MainActor
 final class AppStateTests: XCTestCase {
-    func testTranscriptKeepsFullTextAndFivePreviewLines() {
+    func testTranscriptKeepsFullText() {
         let state = AppState()
         let transcript = "one\ntwo\nthree\nfour\nfive\nsix\nseven"
 
         state.setTranscriptPreview(fullText: transcript)
 
         XCTAssertEqual(state.transcriptText, transcript)
-        XCTAssertEqual(
-            state.transcriptPreviewLines,
-            ["three", "four", "five", "six", "seven"]
-        )
     }
 
     func testProgressMessageReplacesScrollableTranscript() {
@@ -23,9 +19,5 @@ final class AppStateTests: XCTestCase {
         state.setProgressMessage("Finishing live transcript...")
 
         XCTAssertEqual(state.transcriptText, "Finishing live transcript...")
-        XCTAssertEqual(
-            state.transcriptPreviewLines,
-            ["Finishing live transcript..."]
-        )
     }
 }

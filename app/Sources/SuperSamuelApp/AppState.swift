@@ -14,12 +14,13 @@ final class AppState: ObservableObject {
     @Published var elapsedSeconds: TimeInterval = 0
     @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
     @Published var transcriptText = "Press Option+Space to start dictation."
-    @Published var transcriptPreviewLines: [String] = ["Press Option+Space to start dictation."]
     @Published var attachedScreenshot: AttachedScreenshot?
     @Published var screenshotStatusMessage: String?
     @Published var isCapturingScreenshot = false
     @Published var showsRecoveryActions = false
     @Published var recordingDeviceName: String?
+    @Published var captureStatusMessage: String?
+    @Published var livePreviewRequiresFinalization = false
 
     private let maxWaveSamples = 96
 
@@ -43,23 +44,15 @@ final class AppState: ObservableObject {
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
             transcriptText = "No speech was detected."
-            transcriptPreviewLines = ["No speech was detected."]
             return
         }
 
         transcriptText = trimmed
-        let lines = wrappedPreviewLines(from: trimmed, maxCharsPerLine: 56)
-        if lines.isEmpty {
-            transcriptPreviewLines = [trimmed]
-            return
-        }
 
-        transcriptPreviewLines = Array(lines.suffix(5))
     }
 
     func setProgressMessage(_ message: String) {
         transcriptText = message
-        transcriptPreviewLines = [message]
     }
 
     func resetForRecording(deviceName: String) {
@@ -67,59 +60,13 @@ final class AppState: ObservableObject {
         setElapsed(seconds: 0)
         waveformSamples = Array(repeating: 0, count: maxWaveSamples)
         transcriptText = "Recording locally..."
-        transcriptPreviewLines = ["Recording locally..."]
         recordingDeviceName = deviceName
+        captureStatusMessage = nil
+        livePreviewRequiresFinalization = false
         attachedScreenshot = nil
         screenshotStatusMessage = nil
         isCapturingScreenshot = false
         showsRecoveryActions = false
     }
 
-    private func wrappedPreviewLines(from text: String, maxCharsPerLine: Int) -> [String] {
-        let paragraphs = text
-            .replacingOccurrences(of: "\r\n", with: "\n")
-            .components(separatedBy: .newlines)
-
-        var result: [String] = []
-
-        for paragraph in paragraphs {
-            let words = paragraph.split(whereSeparator: { $0.isWhitespace }).map(String.init)
-            if words.isEmpty {
-                continue
-            }
-
-            var current = ""
-            for word in words {
-                if word.count > maxCharsPerLine {
-                    if !current.isEmpty {
-                        result.append(current)
-                        current = ""
-                    }
-
-                    var start = word.startIndex
-                    while start < word.endIndex {
-                        let end = word.index(start, offsetBy: maxCharsPerLine, limitedBy: word.endIndex) ?? word.endIndex
-                        result.append(String(word[start..<end]))
-                        start = end
-                    }
-                    continue
-                }
-
-                if current.isEmpty {
-                    current = word
-                } else if current.count + 1 + word.count <= maxCharsPerLine {
-                    current += " " + word
-                } else {
-                    result.append(current)
-                    current = word
-                }
-            }
-
-            if !current.isEmpty {
-                result.append(current)
-            }
-        }
-
-        return result
-    }
 }

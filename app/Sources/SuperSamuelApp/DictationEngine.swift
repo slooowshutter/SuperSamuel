@@ -96,6 +96,7 @@ struct DictationResult: Codable, Sendable {
 protocol DictationTransport: Sendable {
     func performTranscription(
         apiKey: String,
+        model: String,
         audio: RecordedAudio
     ) async throws -> OpenRouterTextResponse
 
@@ -113,6 +114,8 @@ protocol DictationTransport: Sendable {
 /// Runs every dictation strategy behind one interface. It deliberately knows
 /// nothing about paste, history, recording sessions, or UI state.
 struct DictationEngine: Sendable {
+    static let benchmarkTranscriptionModel = "openai/whisper-large-v3"
+
     private let transport: any DictationTransport
 
     init(transport: any DictationTransport) {
@@ -126,13 +129,14 @@ struct DictationEngine: Sendable {
         let startedAt = Date()
         let response = try await transport.performTranscription(
             apiKey: apiKey,
+            model: Self.benchmarkTranscriptionModel,
             audio: audio
         )
         return DictationDraft(
             text: response.text,
             metrics: DictationCallMetrics(
                 stage: .whisper,
-                requestedModel: OpenRouterService.transcriptionModel,
+                requestedModel: Self.benchmarkTranscriptionModel,
                 resolvedModel: response.resolvedModel,
                 provider: response.provider,
                 durationSeconds: Date().timeIntervalSince(startedAt),

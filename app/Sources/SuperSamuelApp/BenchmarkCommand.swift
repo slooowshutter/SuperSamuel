@@ -439,6 +439,7 @@ private struct DictationBenchmarkRunner {
             "",
             "- Run: `\(runID)`",
             "- Recorded: \(recordedAt)",
+            "- Whisper draft model: `\(DictationEngine.benchmarkTranscriptionModel)`",
             "- Audio-model routing: highest advertised throughput (`provider.sort = throughput`)",
             "- Gemini 3 reasoning: minimal and excluded; Gemini 2.5 reasoning: disabled",
             "",
@@ -451,7 +452,7 @@ private struct DictationBenchmarkRunner {
             let seconds = record.totalDurationSeconds.map { String(format: "%.2fs", $0) } ?? "—"
             let wer = record.wordErrorRate.map { String(format: "%.1f%%", $0 * 100) } ?? "—"
             let geminiCall = record.calls.first { $0.stage == .gemini }
-            let provider = geminiCall?.provider ?? "—"
+            let provider = (geminiCall ?? record.calls.first)?.provider ?? "—"
             let tokenRate: String
             if let tokens = geminiCall?.usage?.completionTokens,
                let duration = geminiCall?.durationSeconds,
@@ -467,7 +468,7 @@ private struct DictationBenchmarkRunner {
                 "## \(index + 1). \(record.strategy.displayName)",
                 "",
                 "- Clip: `\(record.clip)`",
-                "- Model: `\(record.dictationModel ?? OpenRouterService.transcriptionModel)`",
+                "- Model: `\(record.dictationModel ?? DictationEngine.benchmarkTranscriptionModel)`",
                 "- Total time: **\(seconds)**",
                 "- WER: \(wer)",
                 "- Provider: \(provider)",
@@ -477,6 +478,9 @@ private struct DictationBenchmarkRunner {
                 "",
                 markdownQuote(value)
             ])
+            for call in record.calls {
+                lines.append("- \(call.stage.rawValue): requested `\(call.requestedModel)`, resolved `\(call.resolvedModel ?? "not reported")`")
+            }
         }
 
         lines.append("")

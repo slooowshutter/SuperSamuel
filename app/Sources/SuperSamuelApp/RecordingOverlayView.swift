@@ -174,6 +174,18 @@ struct RecordingOverlayView: View {
 
     private var statusFooter: some View {
         VStack(alignment: .leading, spacing: 10) {
+            if let message = state.captureStatusMessage {
+                Text(message)
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.orange)
+                    .fixedSize(horizontal: false, vertical: true)
+            } else if state.phase == .recording && state.livePreviewRequiresFinalization {
+                Text("Live preview · Full instructions applied after Stop")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.white.opacity(0.56))
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     Text(footerText)
@@ -209,7 +221,7 @@ struct RecordingOverlayView: View {
                     .buttonStyle(.borderedProminent)
                     .tint(Color.accentColor)
 
-                    Button("Trash…") {
+                    Button("Trash") {
                         onDelete?()
                     }
                     .buttonStyle(.bordered)

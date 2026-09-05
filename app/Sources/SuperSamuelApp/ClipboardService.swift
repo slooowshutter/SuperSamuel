@@ -7,7 +7,13 @@ struct ClipboardSnapshot {
 
 @MainActor
 final class ClipboardService {
-    private let pasteboard = NSPasteboard.general
+    private let pasteboard: NSPasteboard
+
+    init(pasteboard: NSPasteboard = .general) {
+        self.pasteboard = pasteboard
+    }
+
+    var changeCount: Int { pasteboard.changeCount }
 
     func snapshot() -> ClipboardSnapshot {
         let copiedItems = (pasteboard.pasteboardItems ?? []).compactMap { item in
@@ -29,11 +35,16 @@ final class ClipboardService {
         return ClipboardSnapshot(items: copiedItems)
     }
 
-    func restore(_ snapshot: ClipboardSnapshot) {
+    @discardableResult
+    func restore(_ snapshot: ClipboardSnapshot, ifUnchangedSince changeCount: Int) -> Bool {
+        guard pasteboard.changeCount == changeCount else {
+            return false
+        }
         pasteboard.clearContents()
         if !snapshot.items.isEmpty {
             pasteboard.writeObjects(snapshot.items)
         }
+        return true
     }
 
     func setString(_ text: String) {
