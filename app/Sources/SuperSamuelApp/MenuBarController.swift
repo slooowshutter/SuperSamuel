@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import ServiceManagement
 
 @MainActor
 final class MenuBarController: NSObject, NSMenuDelegate {
@@ -45,6 +46,11 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     )
     private let restoreClipboardItem = NSMenuItem(
         title: "Restore Clipboard",
+        action: nil,
+        keyEquivalent: ""
+    )
+    private let openAtLoginItem = NSMenuItem(
+        title: "Open at Login",
         action: nil,
         keyEquivalent: ""
     )
@@ -129,6 +135,9 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         restoreClipboardItem.target = self
         restoreClipboardItem.action = #selector(handleToggleRestoreClipboard)
 
+        openAtLoginItem.target = self
+        openAtLoginItem.action = #selector(handleToggleOpenAtLogin)
+
         openSettingsItem.target = self
         openSettingsItem.action = #selector(handleOpenSettings)
 
@@ -145,6 +154,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(.separator())
         menu.addItem(autoPasteItem)
         menu.addItem(restoreClipboardItem)
+        menu.addItem(openAtLoginItem)
         menu.addItem(.separator())
         menu.addItem(openSettingsItem)
         menu.addItem(openAccessibilityItem)
@@ -287,6 +297,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         autoPasteItem.state = settings.autoPaste ? .on : .off
         restoreClipboardItem.state = settings.restoreClipboard ? .on : .off
         restoreClipboardItem.isEnabled = settings.autoPaste
+        openAtLoginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
     private func pendingRecordingTitle(
@@ -337,6 +348,20 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc
     private func handleToggleRestoreClipboard() {
         settings.restoreClipboard.toggle()
+        refreshCheckmarks()
+    }
+
+    @objc
+    private func handleToggleOpenAtLogin() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+        } catch {
+            print("Could not change Open at Login: \(error.localizedDescription)")
+        }
         refreshCheckmarks()
     }
 

@@ -94,8 +94,11 @@ final class RecordingStoreTests: XCTestCase {
             try store.saveDraftTranscript("Old draft", sessionID: session.id)
             try store.saveFinalTranscript("Old final", sessionID: session.id)
             try store.saveLivePartialTranscript("Old live fragment", sessionID: session.id)
-            try store.saveTranscript("Old raw", sessionID: session.id, chunkID: chunk.id, cleaned: false)
-            try store.saveTranscript("Old cleanup", sessionID: session.id, chunkID: chunk.id, cleaned: true)
+            try store.saveTranscript("Old raw", sessionID: session.id, chunkID: chunk.id)
+            let directory = store.directoryURL(for: session.id)
+            let legacyCleanup = directory.appendingPathComponent("cleaned-\(chunk.id.uuidString).txt")
+            let noSpeechMarker = directory.appendingPathComponent("no-speech-\(chunk.id.uuidString).marker")
+            try "Old cleanup".write(to: legacyCleanup, atomically: true, encoding: .utf8)
             try store.markChunkAsNoSpeech(sessionID: session.id, chunkID: chunk.id)
 
             try store.prepareForProcessing(
@@ -110,9 +113,9 @@ final class RecordingStoreTests: XCTestCase {
             XCTAssertNil(store.draftTranscript(sessionID: session.id), change)
             XCTAssertNil(store.finalTranscript(sessionID: session.id), change)
             XCTAssertNil(store.livePartialTranscript(sessionID: session.id), change)
-            XCTAssertNil(store.cachedTranscript(sessionID: session.id, chunkID: chunk.id, cleaned: false), change)
-            XCTAssertNil(store.cachedTranscript(sessionID: session.id, chunkID: chunk.id, cleaned: true), change)
-            XCTAssertFalse(store.chunkHadNoSpeech(sessionID: session.id, chunkID: chunk.id), change)
+            XCTAssertNil(store.cachedTranscript(sessionID: session.id, chunkID: chunk.id), change)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: legacyCleanup.path), change)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: noSpeechMarker.path), change)
             XCTAssertEqual(try Data(contentsOf: audioURL), Data([1, 2, 3]), change)
         }
     }

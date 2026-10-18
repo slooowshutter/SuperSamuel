@@ -47,7 +47,6 @@ final class DictationController {
     private var recordingConfiguration: RecordingConfiguration?
     private var liveCaptureContinuous = true
     private var savedCaptureContinuous = true
-    private var liveAudioDuration: TimeInterval = 0
     private var nextMicrophoneRecoveryAt = Date.distantPast
     private var persistentMenuRefreshTask: Task<Void, Never>?
 
@@ -144,6 +143,11 @@ final class DictationController {
         overlayController.onDelete = { [weak self] in
             Task { @MainActor [weak self] in
                 self?.deleteRecoverableRecording()
+            }
+        }
+        overlayController.onCopy = { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.copyLastTranscript()
             }
         }
         self.overlayController = overlayController
@@ -270,7 +274,6 @@ final class DictationController {
             recordingConfiguration = configuration
             liveCaptureContinuous = true
             savedCaptureContinuous = true
-            liveAudioDuration = 0
             let session = try recordingStore.createSession(
                 transcriptionModel: configuration.model,
                 transcriptionContext: configuration.context,
@@ -394,11 +397,8 @@ final class DictationController {
                 duration: audioCapture.recordedDuration
             )
         }
-        // Allow AAC priming and one capture buffer of scheduling skew. Larger gaps
-        // include a slow sidecar startup or missed PCM, even if the engine recovered.
-        if audioCapture.recordedDuration - liveAudioDuration > 0.15 {
-            liveCaptureContinuous = false
-        }
+        // ponytail: the PCM sidecar starts after the recorder, so its stream is always a
+        // little shorter. Comparing the two lengths discarded most good live transcripts.
         try recordingStore.setCaptureContinuity(
             live: liveCaptureContinuous,
             saved: savedCaptureContinuous,
@@ -444,7 +444,6 @@ final class DictationController {
         do {
             try realtimeAudioCapture.start { [weak self] data in
                 guard let self, self.activeRecordingID == sessionID else { return }
-                self.liveAudioDuration += Double(data.count) / (24_000 * 2)
                 self.realtimeSession?.appendAudio(data)
             }
         } catch {
@@ -605,9 +604,7 @@ final class DictationController {
                !savedSession.canUseLiveTranscript || savedSession.savedCaptureContinuous == false {
                 try? recordingStore.saveLivePartialTranscript(realtimeSession.currentTranscript, sessionID: sessionID)
                 realtimeSession.cancel()
-                appState.setProgressMessage(savedSession.livePreviewRequiresFinalization == true
-                    ? "Applying your full instructions to the saved recording..."
-                    : "Transcribing the saved recording...")
+                appState.setProgressMessage("Transcribing the saved recording...")
             } else if let realtimeSession {
                 appState.setProgressMessage("Finishing live transcript...")
                 do {
@@ -1263,11 +1260,14 @@ final class DictationController {
         appState.setPhase(.error(message))
         if recoverable {
             appState.captureStatusMessage = message
-            if let id = recoverySessionID,
-               let partial = recordingStore.draftTranscript(sessionID: id)
-                    ?? recordingStore.livePartialTranscript(sessionID: id) {
+            // Show the words the failed recording still has, and let Copy and
+            // Copy Last Transcript return them.
+            let partial = recoverySessionID.flatMap(savedText(for:))
+            if let partial {
                 appState.setTranscriptPreview(fullText: partial)
+                lastTranscript = partial
             }
+            appState.canCopyRecoveredTranscript = partial != nil
         } else {
             appState.setProgressMessage(message)
         }
@@ -1287,6 +1287,18 @@ final class DictationController {
             }
             self?.resetToIdle()
         }
+    }
+
+    /// The best text a failed recording has: its draft, its live text, or its transcribed parts.
+    private func savedText(for sessionID: UUID) -> String? {
+        if let text = recordingStore.draftTranscript(sessionID: sessionID)
+            ?? recordingStore.livePartialTranscript(sessionID: sessionID) {
+            return text
+        }
+        let parts = ((try? recordingStore.load(sessionID).chunks) ?? []).compactMap {
+            recordingStore.cachedTranscript(sessionID: sessionID, chunkID: $0.id)
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: "\n\n")
     }
 
     private func formattedDuration(_ duration: TimeInterval) -> String {

@@ -18,6 +18,7 @@ final class AppState: ObservableObject {
     @Published var screenshotStatusMessage: String?
     @Published var isCapturingScreenshot = false
     @Published var showsRecoveryActions = false
+    @Published var canCopyRecoveredTranscript = false
     @Published var recordingDeviceName: String?
     @Published var captureStatusMessage: String?
     @Published var liveInstructionsShortened = false

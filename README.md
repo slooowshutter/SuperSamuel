@@ -65,13 +65,13 @@ If cleanup fails or is cancelled, the draft remains available. Retrying that cle
 reuses the draft; changing cleanup settings only invalidates the edited result.
 Turning cleanup off delivers transcription directly. Cleanup is off by default.
 
-On macOS 26 and newer, the compact notification-style recording overlay and
-settings window use untinted native **clear Liquid Glass** across their full
-surface, with clear-glass controls. A subtle moving chromatic backdrop gives
-the untinted glass light to refract even above nearly black applications.
-SuperSamuel does not add a custom blur layer. Older macOS versions use a
-non-blurred, translucent fallback because native Liquid Glass is unavailable
-there.
+On macOS 26 and newer, the compact notification-style recording overlay uses
+untinted native **clear Liquid Glass** across its full surface, with clear-glass
+controls. A subtle moving chromatic backdrop gives the untinted glass light to
+refract even above nearly black applications. The settings window has a native
+floating glass sidebar over a regular Liquid Glass background. Each page lists
+its controls with the label above each one. Older macOS versions use the
+standard window look because native Liquid Glass is unavailable there.
 
 ## Requirements
 
@@ -99,6 +99,9 @@ It bundles `app/Resources/AppIcon.icns` so macOS search and Finder show the
 SuperSamuel portrait used in Conductor's sidebar. The original 128×128 PNG is
 kept beside it; the ICNS includes standard and Retina sizes with crisp pixel-art
 scaling.
+SwiftPM records the deployment target (13.0) as the SDK version, so macOS 26
+would run the app in its compatibility mode, without Liquid Glass. The script
+writes the real SDK version into the binary before it signs the bundle.
 It uses an optimized release build by default. For a faster local rebuild:
 
 ```bash
@@ -147,9 +150,8 @@ consistent Apple signing identity; a fixed bundle identifier or self-signed
 certificate alone does not solve this. See
 [Apple's Keychain client identification implementation](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/clientid.cpp).
 
-Scrolling over text fields or unfocused editors scrolls the settings page.
-Click into a long editor to scroll its text; reaching either end continues
-scrolling the page. Short and disabled editors do not trap scrolling.
+SuperSamuel opens at login. The first launch adds it to **Login Items**; turn
+it off with **Open at Login** in the `SS` menu.
 
 The default transcription model is:
 
@@ -161,76 +163,6 @@ Dictionary entries are sent as live `keywords` and included as vocabulary in the
 fallback context. Screenshot text is extracted locally and supplied as recognition
 context without a second model request. When cleanup is enabled, the completed
 transcript is edited using the single prompt in Settings before delivery.
-
-## Headless dictation benchmark
-
-The isolated benchmark runner compares the same audio through the following
-strategies. Its Whisper draft explicitly uses `openai/whisper-large-v3`, independent
-of the app's saved-audio default. Reports record requested and resolved models
-for each call:
-
-
-- Whisper only
-- Whisper followed by Gemini with transcript text only
-- Gemini with audio only
-- Whisper followed by Gemini with both the audio and Whisper draft
-
-Audio-model requests default to `google/gemini-3.5-flash` and ask OpenRouter to
-route to the provider with the highest advertised throughput. The runner never
-pastes text, writes transcript history, or deletes a recording session.
-
-Create a private corpus in the gitignored `.context` directory:
-
-```text
-.context/dictation-benchmark/cases/
-  normal-dictation.m4a
-  normal-dictation.reference.txt
-  noisy-product-name.m4a
-  noisy-product-name.reference.txt
-  noisy-product-name.instruction.txt
-```
-
-The reference and per-clip instruction files are optional. Run all four
-strategies from the repository root:
-
-```bash
-cd app
-swift run SuperSamuel benchmark \
-  --input ../.context/dictation-benchmark/cases \
-  --output ../.context/dictation-benchmark/results
-```
-
-Use `--strategies` for a smaller comparison:
-
-```bash
-swift run SuperSamuel benchmark \
-  --input ../.context/dictation-benchmark/cases \
-  --strategies gemini-audio,whisper-gemini-audio
-```
-
-Use `--models` to run the audio strategies against several OpenRouter models.
-Whisper-only still runs once and its draft is shared by every hybrid strategy:
-
-```bash
-swift run SuperSamuel benchmark \
-  --input ../.context/dictation-benchmark/cases \
-  --strategies whisper-only,gemini-audio,whisper-gemini-audio \
-  --models google/gemini-3.5-flash,mistralai/voxtral-small-24b-2507,openai/gpt-audio-mini
-```
-
-Use 16 kHz mono PCM WAV for the broadest cross-model compatibility. Supported
-input formats still depend on the selected model and its routed provider.
-
-The API key comes from `OPENROUTER_API_KEY` when set, otherwise from the same
-credential storage as the app (Keychain or opted-in local files). Every run creates a new directory containing:
-
-- `results.jsonl` with the audio hash, exact instruction, model/provider,
-  latency, usage, cost, output, errors, and optional word-error rate
-- `report.md` with a side-by-side comparison and observed completion tokens per
-  second
-
-Throughput routing optimizes OpenRouter's provider choice, while the recorded
-end-to-end latency still includes upload, time-to-first-token, and network time.
 
 ## Permissions
 
@@ -307,6 +239,10 @@ in the menu, overlay, and recovery dialog do not ask for another confirmation.
 The manifest records model, instructions, dictionary, live delay, capture
 continuity, and the microphone used for each recorded part.
 
+When processing fails, the overlay shows the words the recording still has (the
+draft, the live text, or the transcribed parts) with **Copy**, **Retry**, and
+**Trash**. **Copy Last Transcript** in the menu returns the same words.
+
 Explicit **Retry** or **Send Recording** transcribes the saved audio afresh using
 current settings, including recordings previously classified as no speech.
 Compatible interrupted processing can reuse successful parts. Changing the
@@ -365,7 +301,6 @@ Run automated checks:
 ```bash
 swift test --package-path app
 swift build --package-path app -c release
-uv run --with-requirements benchmark/requirements.txt python -m unittest discover -s benchmark
 ```
 
 See [verification results](VALIDATION.md) for deployed API compatibility checks,

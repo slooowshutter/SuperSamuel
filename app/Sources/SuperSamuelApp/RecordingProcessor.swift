@@ -205,8 +205,7 @@ final class RecordingProcessor {
             let rawTranscript: String?
             if let cached = recordingStore.cachedTranscript(
                 sessionID: session.id,
-                chunkID: item.0.id,
-                cleaned: false
+                chunkID: item.0.id
             ) {
                 rawTranscript = cached
             } else {
@@ -230,8 +229,7 @@ final class RecordingProcessor {
                         try recordingStore.saveTranscript(
                             transcript,
                             sessionID: session.id,
-                            chunkID: item.0.id,
-                            cleaned: false
+                            chunkID: item.0.id
                         )
                         rawTranscript = transcript
                     } catch OpenRouterServiceError.emptyTranscript where isSilent {

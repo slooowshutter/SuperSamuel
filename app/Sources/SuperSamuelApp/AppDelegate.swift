@@ -1,4 +1,5 @@
 import AppKit
+import ServiceManagement
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
@@ -7,7 +8,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
         configureApplicationMenu()
+        openAtLoginOnce()
         dictationController.start()
+    }
+
+    /// Opens SuperSamuel at login once by default. The menu item turns it off, and
+    /// later launches never turn it back on.
+    private func openAtLoginOnce() {
+        let key = "openAtLoginInstalled"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        do {
+            try SMAppService.mainApp.register()
+            UserDefaults.standard.set(true, forKey: key)
+        } catch {
+            print("Could not open SuperSamuel at login: \(error.localizedDescription)")
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {

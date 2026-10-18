@@ -11,6 +11,7 @@ final class OverlayWindowController {
     var onClearScreenshot: (() -> Void)?
     var onRetry: (() -> Void)?
     var onDelete: (() -> Void)?
+    var onCopy: (() -> Void)?
 
     init(state: AppState) {
         self.state = state
@@ -18,7 +19,10 @@ final class OverlayWindowController {
 
     func show() {
         let panel = ensurePanel()
-        center(panel)
+        // Keep the position the user chose while the overlay stays on screen.
+        if !panel.isVisible {
+            center(panel)
+        }
         panel.orderFrontRegardless()
     }
 
@@ -28,8 +32,6 @@ final class OverlayWindowController {
 
     private func ensurePanel() -> NSPanel {
         if let panel {
-            // Update the view with current callback
-            updatePanelContent(panel)
             return panel
         }
 
@@ -65,6 +67,7 @@ final class OverlayWindowController {
             onClearScreenshot: onClearScreenshot,
             onRetry: onRetry,
             onDelete: onDelete,
+            onCopy: onCopy,
             onResize: { [weak self, weak panel] translation, ended in
                 guard let self, let panel else {
                     return

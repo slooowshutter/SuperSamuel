@@ -91,275 +91,6 @@ final class OpenRouterServiceTests: XCTestCase {
         XCTAssertEqual(transcript, "hello")
     }
 
-    func testGeminiAudioUsesHighestThroughputRouting() async throws {
-        let audioData = Data("audio-to-gemini".utf8)
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).m4a")
-        try audioData.write(to: fileURL)
-        defer { try? FileManager.default.removeItem(at: fileURL) }
-
-        URLProtocolStub.handler = { request in
-            XCTAssertEqual(
-                request.url?.absoluteString,
-                "https://openrouter.ai/api/v1/chat/completions"
-            )
-            let body = try XCTUnwrap(try requestBody(request))
-            let payload = try XCTUnwrap(
-                JSONSerialization.jsonObject(with: body) as? [String: Any]
-            )
-            XCTAssertEqual(
-                payload["model"] as? String,
-                OpenRouterService.geminiDictationModel
-            )
-            XCTAssertEqual(
-                (payload["provider"] as? [String: Any])?["sort"] as? String,
-                "throughput"
-            )
-            XCTAssertEqual(
-                (payload["reasoning"] as? [String: Any])?["effort"] as? String,
-                "minimal"
-            )
-            XCTAssertEqual(
-                (payload["reasoning"] as? [String: Any])?["exclude"] as? Bool,
-                true
-            )
-
-            let content = try userContent(from: payload)
-            XCTAssertEqual(content.count, 2)
-            XCTAssertEqual(content.first?["text"] as? String, "Audio recording.")
-            let inputAudio = try XCTUnwrap(
-                content.last?["input_audio"] as? [String: Any]
-            )
-            XCTAssertEqual(inputAudio["format"] as? String, "m4a")
-            XCTAssertEqual(
-                inputAudio["data"] as? String,
-                audioData.base64EncodedString()
-            )
-
-            let response = try XCTUnwrap(
-                HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: nil,
-                    headerFields: nil
-                )
-            )
-            return (
-                response,
-                Data(
-                    #"{"model":"google/gemini-3.5-flash","provider":"Google AI Studio","choices":[{"message":{"content":"Clean dictation."}}],"usage":{"prompt_tokens":10,"completion_tokens":3,"total_tokens":13,"cost":0.001}}"#.utf8
-                )
-            )
-        }
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [URLProtocolStub.self]
-        let service = OpenRouterService(
-            urlSession: URLSession(configuration: configuration)
-        )
-        let response = try await service.performAudioDictation(
-            apiKey: "test-key",
-            audio: RecordedAudio(
-                fileURL: fileURL,
-                format: "m4a",
-                mimeType: "audio/mp4"
-            ),
-            draftTranscript: nil,
-            rewriteInstruction: "Preserve meaning."
-        )
-
-        XCTAssertEqual(response.text, "Clean dictation.")
-        XCTAssertEqual(response.provider, "Google AI Studio")
-        XCTAssertEqual(response.usage?.totalTokens, 13)
-        XCTAssertEqual(response.usage?.cost, 0.001)
-    }
-
-    func testGeminiHybridSendsAudioAndWhisperDraft() async throws {
-        let fileURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).wav")
-        try Data("hybrid-audio".utf8).write(to: fileURL)
-        defer { try? FileManager.default.removeItem(at: fileURL) }
-
-        URLProtocolStub.handler = { request in
-            let body = try XCTUnwrap(try requestBody(request))
-            let payload = try XCTUnwrap(
-                JSONSerialization.jsonObject(with: body) as? [String: Any]
-            )
-            XCTAssertEqual(
-                payload["model"] as? String,
-                "mistralai/voxtral-small-24b-2507"
-            )
-            XCTAssertNil(payload["reasoning"])
-            let content = try userContent(from: payload)
-            XCTAssertEqual(content.count, 2)
-            let prompt = try XCTUnwrap(content.first?["text"] as? String)
-            XCTAssertEqual(prompt, "possible product name")
-            let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
-            XCTAssertEqual(messages.first?["content"] as? String, "Preserve meaning.")
-            XCTAssertEqual(content.last?["type"] as? String, "input_audio")
-
-            let response = try XCTUnwrap(
-                HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: nil,
-                    headerFields: nil
-                )
-            )
-            return (
-                response,
-                Data(#"{"choices":[{"message":{"content":"Final text"}}]}"#.utf8)
-            )
-        }
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [URLProtocolStub.self]
-        let service = OpenRouterService(
-            urlSession: URLSession(configuration: configuration)
-        )
-        let response = try await service.performAudioDictation(
-            apiKey: "test-key",
-            model: "mistralai/voxtral-small-24b-2507",
-            audio: RecordedAudio(
-                fileURL: fileURL,
-                format: "wav",
-                mimeType: "audio/wav"
-            ),
-            draftTranscript: "possible product name",
-            rewriteInstruction: "Preserve meaning."
-        )
-
-        XCTAssertEqual(response.text, "Final text")
-    }
-
-    func testGPTAudioEnhancementUsesTextContextWithoutUnsupportedImage() async throws {
-        let audioData = Data("prepared-wav-audio".utf8)
-        let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).wav")
-        let screenshotURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).jpg")
-        try audioData.write(to: audioURL)
-        try Data("screenshot".utf8).write(to: screenshotURL)
-        defer {
-            try? FileManager.default.removeItem(at: audioURL)
-            try? FileManager.default.removeItem(at: screenshotURL)
-        }
-
-        URLProtocolStub.handler = { request in
-            let body = try XCTUnwrap(try requestBody(request))
-            let payload = try XCTUnwrap(
-                JSONSerialization.jsonObject(with: body) as? [String: Any]
-            )
-            XCTAssertEqual(
-                payload["model"] as? String,
-                OpenRouterService.defaultAudioEnhancementModel
-            )
-
-            let content = try userContent(from: payload)
-            XCTAssertEqual(content.count, 2, "GPT Audio Mini does not accept image input")
-            let prompt = try XCTUnwrap(content.first?["text"] as? String)
-            XCTAssertEqual(prompt, "Supporting context:\nProject SuperSamuel\n\nTranscript:\nAudio recording.")
-            XCTAssertEqual(content.last?["type"] as? String, "input_audio")
-
-            let response = try XCTUnwrap(
-                HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: nil,
-                    headerFields: nil
-                )
-            )
-            return (
-                response,
-                Data(#"{"choices":[{"message":{"content":"Enhanced text"}}]}"#.utf8)
-            )
-        }
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [URLProtocolStub.self]
-        let service = OpenRouterService(
-            urlSession: URLSession(configuration: configuration)
-        )
-        let response = try await service.performAudioDictation(
-            apiKey: "test-key",
-            model: OpenRouterService.defaultAudioEnhancementModel,
-            audio: RecordedAudio(
-                fileURL: audioURL,
-                format: "wav",
-                mimeType: "audio/wav"
-            ),
-            draftTranscript: nil,
-            rewriteInstruction: "Preserve meaning.",
-            supportingContext: "Project SuperSamuel",
-            screenshotURL: screenshotURL
-        )
-
-        XCTAssertEqual(response.text, "Enhanced text")
-    }
-
-    func testGeminiEnhancementIncludesNativeScreenshotContext() async throws {
-        let audioURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).wav")
-        let screenshotURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("\(UUID().uuidString).jpg")
-        try Data("audio".utf8).write(to: audioURL)
-        let screenshotData = Data("image".utf8)
-        try screenshotData.write(to: screenshotURL)
-        defer {
-            try? FileManager.default.removeItem(at: audioURL)
-            try? FileManager.default.removeItem(at: screenshotURL)
-        }
-
-        URLProtocolStub.handler = { request in
-            let body = try XCTUnwrap(try requestBody(request))
-            let payload = try XCTUnwrap(
-                JSONSerialization.jsonObject(with: body) as? [String: Any]
-            )
-            let content = try userContent(from: payload)
-            XCTAssertEqual(content.count, 3)
-            XCTAssertEqual(content.last?["type"] as? String, "image_url")
-            let image = try XCTUnwrap(
-                content.last?["image_url"] as? [String: Any]
-            )
-            XCTAssertEqual(
-                image["url"] as? String,
-                "data:image/jpeg;base64,\(screenshotData.base64EncodedString())"
-            )
-
-            let response = try XCTUnwrap(
-                HTTPURLResponse(
-                    url: request.url!,
-                    statusCode: 200,
-                    httpVersion: nil,
-                    headerFields: nil
-                )
-            )
-            return (
-                response,
-                Data(#"{"choices":[{"message":{"content":"Gemini text"}}]}"#.utf8)
-            )
-        }
-
-        let configuration = URLSessionConfiguration.ephemeral
-        configuration.protocolClasses = [URLProtocolStub.self]
-        let service = OpenRouterService(
-            urlSession: URLSession(configuration: configuration)
-        )
-        _ = try await service.performAudioDictation(
-            apiKey: "test-key",
-            model: "google/gemini-3.5-flash",
-            audio: RecordedAudio(
-                fileURL: audioURL,
-                format: "wav",
-                mimeType: "audio/wav"
-            ),
-            draftTranscript: nil,
-            rewriteInstruction: "Preserve meaning.",
-            supportingContext: "Visible project name",
-            screenshotURL: screenshotURL
-        )
-    }
-
     @MainActor
     func testProcessorUsesSingleTranscriptionRequest() async throws {
         let root = FileManager.default.temporaryDirectory
@@ -603,17 +334,13 @@ final class OpenRouterServiceTests: XCTestCase {
         XCTAssertEqual(
             recordingStore.cachedTranscript(
                 sessionID: session.id,
-                chunkID: firstChunk.id,
-                cleaned: false
-            ),
+                chunkID: firstChunk.id),
             "first part"
         )
         XCTAssertNil(
             recordingStore.cachedTranscript(
                 sessionID: session.id,
-                chunkID: secondChunk.id,
-                cleaned: false
-            )
+                chunkID: secondChunk.id)
         )
         XCTAssertNoThrow(try recordingStore.load(session.id))
 
@@ -886,15 +613,16 @@ final class OpenRouterServiceTests: XCTestCase {
         let service = OpenRouterService()
         for (index, item) in cases.enumerated() {
             let started = Date()
-            let response = try await service.performAudioDictation(
-                apiKey: apiKey, model: OpenRouterService.defaultCleanupModel,
-                audio: nil, draftTranscript: item.0,
-                rewriteInstruction: OpenRouterService.defaultCleanupInstruction
+            let text = try await service.cleanUp(
+                apiKey: apiKey, transcript: item.0,
+                configuration: TranscriptCleanupConfiguration(
+                    model: OpenRouterService.defaultCleanupModel,
+                    instructions: OpenRouterService.defaultCleanupInstruction
+                )
             )
             let elapsed = Date().timeIntervalSince(started)
-            print("Gemma synthetic \(index + 1): \(String(format: "%.3f", elapsed))s, provider=\(response.provider ?? "unknown"), tokens=\(response.usage?.completionTokens ?? 0), cost=\(response.usage?.cost ?? 0), output=\(response.text)")
-            XCTAssertEqual(response.provider, "Cerebras")
-            XCTAssertEqual(response.text, item.1)
+            print("Gemma synthetic \(index + 1): \(String(format: "%.3f", elapsed))s, output=\(text)")
+            XCTAssertEqual(text, item.1)
         }
     }
 
@@ -929,57 +657,6 @@ final class OpenRouterServiceTests: XCTestCase {
         XCTAssertEqual(result.transcript, "Live words about SuperSamuel.")
         XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptSource, "live")
         XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptionContext, context)
-    }
-
-    @MainActor
-    func testLongContextPreviewIsNeverFinalAndFullInstructionsReachSavedAudio() async throws {
-        for hasCachedPreview in [false, true] {
-            let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
-            defer { try? FileManager.default.removeItem(at: root) }
-            let store = RecordingStore(rootDirectory: root)
-            let history = TranscriptHistoryStore(rootDirectory: root)
-            let fullContext = String(repeating: "Keep every spoken word. ", count: 50) + "Final instruction must survive."
-            let session = try store.createSession(
-                transcriptionModel: "openai/whisper-large-v3",
-                transcriptionContext: fullContext, vocabulary: ["SuperSamuel"]
-            )
-            _ = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
-            try store.requireSavedAudioFinalization(for: session.id)
-            // Reload the manifest to exercise recovery, not just an in-memory flag.
-            let reloadedStore = RecordingStore(rootDirectory: root)
-            XCTAssertEqual(try reloadedStore.load(session.id).livePreviewRequiresFinalization, true)
-            if hasCachedPreview {
-                try store.saveDraftTranscript("Preview draft", sessionID: session.id)
-                try store.saveFinalTranscript("Preview final", sessionID: session.id)
-                try store.setTranscriptSource("live", for: session.id)
-            }
-            let count = LockedCounter()
-            URLProtocolStub.handler = { request in
-                _ = count.increment()
-                let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: requestBody(request)!) as? [String: Any])
-                let provider = payload["provider"] as? [String: Any]
-                let options = provider?["options"] as? [String: Any]
-                let openAI = options?["openai"] as? [String: Any]
-                let prompt = try XCTUnwrap(openAI?["prompt"] as? String)
-                XCTAssertTrue(prompt.contains(fullContext))
-                XCTAssertTrue(prompt.contains("SuperSamuel"))
-                return (HTTPURLResponse(url: request.url!, statusCode: 200, httpVersion: nil, headerFields: nil)!, Data(#"{"text":"Final result with full instructions."}"#.utf8))
-            }
-            let configuration = URLSessionConfiguration.ephemeral
-            configuration.protocolClasses = [URLProtocolStub.self]
-            let processor = RecordingProcessor(
-                recordingStore: reloadedStore, historyStore: history,
-                openRouterService: OpenRouterService(urlSession: URLSession(configuration: configuration))
-            )
-            let result = try await processor.process(
-                sessionID: session.id, apiKey: "test-key",
-                preferredTranscript: "Live preview", onProgress: { _ in }
-            )
-            XCTAssertEqual(count.value, 1)
-            XCTAssertEqual(result.transcript, "Final result with full instructions.")
-            XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptionContext, fullContext)
-            XCTAssertEqual(try history.metadata(id: session.id)?.workflow.transcriptSource, "saved-audio")
-        }
     }
 
     @MainActor
@@ -1051,8 +728,8 @@ final class OpenRouterServiceTests: XCTestCase {
             let first = try addAudibleChunk(to: store, sessionID: session.id, sample: 10_000)
             let second = try addAudibleChunk(to: store, sessionID: session.id, sample: 12_000)
             try store.setCaptureContinuity(live: false, saved: false, for: session.id)
-            try store.saveTranscript("Before the switch.", sessionID: session.id, chunkID: first.id, cleaned: false)
-            try store.saveTranscript("After the switch.", sessionID: session.id, chunkID: second.id, cleaned: false)
+            try store.saveTranscript("Before the switch.", sessionID: session.id, chunkID: first.id)
+            try store.saveTranscript("After the switch.", sessionID: session.id, chunkID: second.id)
             let expected = "Before the switch.\n\nAfter the switch."
             if cache != "parts" {
                 try store.saveDraftTranscript(expected, sessionID: session.id)
@@ -1204,7 +881,7 @@ final class OpenRouterServiceTests: XCTestCase {
             _ = try await original.value
             XCTFail("The old attempt must stop before writing any derived result")
         } catch is CancellationError {}
-        XCTAssertNil(store.cachedTranscript(sessionID: session.id, chunkID: chunk.id, cleaned: false))
+        XCTAssertNil(store.cachedTranscript(sessionID: session.id, chunkID: chunk.id))
         XCTAssertNil(store.draftTranscript(sessionID: session.id))
         XCTAssertNil(store.finalTranscript(sessionID: session.id))
 
