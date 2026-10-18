@@ -121,11 +121,7 @@ final class TranscriptHistoryStoreTests: XCTestCase {
 
         let store = TranscriptHistoryStore(rootDirectory: root)
         let id = UUID()
-        _ = try await store.save(
-            recordingID: id,
-            createdAt: Date(timeIntervalSince1970: 100),
-            text: "Legacy transcript"
-        )
+        try writeLegacyTranscript(id: id, createdAt: Date(timeIntervalSince1970: 100), text: "Legacy transcript", root: root)
 
         XCTAssertEqual(try store.item(id: id)?.text, "Legacy transcript")
         let recent = try await store.recent()
@@ -176,7 +172,7 @@ final class TranscriptHistoryStoreTests: XCTestCase {
         XCTAssertEqual(retriedMetadata.workflow.vocabulary, ["Updated vocabulary"])
 
         let olderID = UUID()
-        _ = try await store.save(recordingID: olderID, createdAt: .distantPast, text: "Older")
+        try writeLegacyTranscript(id: olderID, createdAt: .distantPast, text: "Older", root: root)
         let afterSave = try await store.recent()
         XCTAssertEqual(afterSave.map(\.id), [original.id, olderID])
         try FileManager.default.removeItem(at: XCTUnwrap(store.artifactURL(for: olderID)))
@@ -187,6 +183,16 @@ final class TranscriptHistoryStoreTests: XCTestCase {
         XCTAssertTrue(afterClear.isEmpty)
         XCTAssertNil(try store.item(id: original.id))
     }
+}
+
+/// Writes the flat JSON format that versions before folder archives produced.
+private func writeLegacyTranscript(id: UUID, createdAt: Date, text: String, root: URL) throws {
+    let directory = root.appendingPathComponent("Transcript History", isDirectory: true)
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    let encoder = JSONEncoder()
+    encoder.dateEncodingStrategy = .iso8601
+    try encoder.encode(TranscriptHistoryItem(id: id, createdAt: createdAt, text: text))
+        .write(to: directory.appendingPathComponent("\(id.uuidString).json"), options: .atomic)
 }
 
 private final class HistoryFileManagerSpy: FileManager, @unchecked Sendable {

@@ -22,6 +22,13 @@ mkdir -p "$SRC_APP/Contents/MacOS"
 mkdir -p "$SRC_APP/Contents/Resources"
 cp "$INFO_PLIST" "$SRC_APP/Contents/Info.plist"
 cp -f "$BUILD_BIN" "$SRC_APP/Contents/MacOS/$APP_NAME"
+
+# SwiftPM records the deployment target as the SDK version (13.0). macOS 26 then runs
+# the app in its compatibility mode, without the Liquid Glass design. Record the real SDK.
+MIN_OS="$(/usr/libexec/PlistBuddy -c "Print LSMinimumSystemVersion" "$INFO_PLIST")"
+xcrun vtool -set-build-version macos "$MIN_OS" "$(xcrun --show-sdk-version)" -replace \
+  -output "$SRC_APP/Contents/MacOS/$APP_NAME.sdk" "$SRC_APP/Contents/MacOS/$APP_NAME" 2>/dev/null
+mv -f "$SRC_APP/Contents/MacOS/$APP_NAME.sdk" "$SRC_APP/Contents/MacOS/$APP_NAME"
 cp "$APP_DIR/Resources/AppIcon.icns" "$SRC_APP/Contents/Resources/AppIcon.icns"
 
 codesign --force --deep --sign - \

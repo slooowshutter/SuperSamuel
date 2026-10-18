@@ -42,11 +42,10 @@ struct RecordingSession: Codable, Identifiable {
     var savedCaptureContinuous: Bool?
     var transcriptSource: String?
     var requiresFreshTranscription: Bool?
-    var livePreviewRequiresFinalization: Bool?
     var cleanup: TranscriptCleanupConfiguration?
 
     var canUseLiveTranscript: Bool {
-        liveCaptureContinuous != false && livePreviewRequiresFinalization != true
+        liveCaptureContinuous != false
     }
 
     var resolvedTranscriptionModel: String {
@@ -214,10 +213,6 @@ final class RecordingStore {
 
     func setTranscriptSource(_ source: String, for sessionID: UUID) throws {
         try update(sessionID) { $0.transcriptSource = source }
-    }
-
-    func requireSavedAudioFinalization(for sessionID: UUID) throws {
-        try update(sessionID) { $0.livePreviewRequiresFinalization = true }
     }
 
     func prepareForProcessing(
@@ -444,16 +439,8 @@ final class RecordingStore {
         return fileManager.fileExists(atPath: url.path) ? url : nil
     }
 
-    func cachedTranscript(
-        sessionID: UUID,
-        chunkID: UUID,
-        cleaned: Bool
-    ) -> String? {
-        let url = transcriptURL(
-            sessionID: sessionID,
-            chunkID: chunkID,
-            cleaned: cleaned
-        )
+    func cachedTranscript(sessionID: UUID, chunkID: UUID) -> String? {
+        let url = transcriptURL(sessionID: sessionID, chunkID: chunkID)
         guard fileManager.fileExists(atPath: url.path) else {
             return nil
         }
@@ -465,32 +452,11 @@ final class RecordingStore {
         return trimmed.isEmpty ? nil : trimmed
     }
 
-    func saveTranscript(
-        _ text: String,
-        sessionID: UUID,
-        chunkID: UUID,
-        cleaned: Bool
-    ) throws {
+    func saveTranscript(_ text: String, sessionID: UUID, chunkID: UUID) throws {
         try text.write(
-            to: transcriptURL(
-                sessionID: sessionID,
-                chunkID: chunkID,
-                cleaned: cleaned
-            ),
+            to: transcriptURL(sessionID: sessionID, chunkID: chunkID),
             atomically: true,
             encoding: .utf8
-        )
-    }
-
-    func chunkHadNoSpeech(
-        sessionID: UUID,
-        chunkID: UUID
-    ) -> Bool {
-        fileManager.fileExists(
-            atPath: noSpeechMarkerURL(
-                sessionID: sessionID,
-                chunkID: chunkID
-            ).path
         )
     }
 
@@ -719,14 +685,9 @@ final class RecordingStore {
         directory(for: sessionID).appendingPathComponent(chunk.filename)
     }
 
-    private func transcriptURL(
-        sessionID: UUID,
-        chunkID: UUID,
-        cleaned: Bool
-    ) -> URL {
-        let prefix = cleaned ? "cleaned" : "raw"
-        return directory(for: sessionID)
-            .appendingPathComponent("\(prefix)-\(chunkID.uuidString).txt")
+    private func transcriptURL(sessionID: UUID, chunkID: UUID) -> URL {
+        directory(for: sessionID)
+            .appendingPathComponent("raw-\(chunkID.uuidString).txt")
     }
 
     private func noSpeechMarkerURL(

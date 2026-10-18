@@ -7,6 +7,7 @@ struct RecordingOverlayView: View {
     var onClearScreenshot: (() -> Void)?
     var onRetry: (() -> Void)?
     var onDelete: (() -> Void)?
+    var onCopy: (() -> Void)?
     var onResize: ((CGSize, Bool) -> Void)?
 
     var body: some View {
@@ -220,6 +221,13 @@ struct RecordingOverlayView: View {
                     }
                     .buttonStyle(.borderedProminent)
                     .tint(Color.accentColor)
+
+                    if state.canCopyRecoveredTranscript {
+                        Button("Copy") {
+                            onCopy?()
+                        }
+                        .buttonStyle(.bordered)
+                    }
 
                     Button("Trash") {
                         onDelete?()

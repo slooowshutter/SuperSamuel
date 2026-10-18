@@ -86,10 +86,6 @@ final class TranscriptHistoryStore {
 
     func clear() async throws { try await background.clear() }
 
-    func save(recordingID: UUID, createdAt: Date, text: String) async throws -> TranscriptHistoryItem {
-        try await background.save(recordingID: recordingID, createdAt: createdAt, text: text)
-    }
-
     func item(id: UUID) throws -> TranscriptHistoryItem? { try files.item(id: id) }
     func metadata(id: UUID) throws -> TranscriptHistoryMetadata? { try files.metadata(id: id) }
     func artifactURL(for id: UUID) -> URL? { files.artifactURL(for: id) }
@@ -131,12 +127,6 @@ private actor TranscriptHistoryBackground {
         try files.clear()
         cachedItems = []
         cachedDirectoryModification = files.directoryModificationDate()
-    }
-
-    func save(recordingID: UUID, createdAt: Date, text: String) throws -> TranscriptHistoryItem {
-        let item = try files.save(recordingID: recordingID, createdAt: createdAt, text: text)
-        cachedItems = nil
-        return item
     }
 }
 
@@ -237,27 +227,6 @@ private final class TranscriptHistoryFiles {
             text: metadata.text,
             savedCaptureContinuous: metadata.savedCaptureContinuous
         )
-    }
-
-    /// Keeps compatibility for callers and installs that only have the original
-    /// flat transcript JSON format.
-    func save(
-        recordingID: UUID,
-        createdAt: Date,
-        text: String
-    ) throws -> TranscriptHistoryItem {
-        try ensureDirectory()
-
-        let item = TranscriptHistoryItem(
-            id: recordingID,
-            createdAt: createdAt,
-            text: text
-        )
-        try encoder.encode(item).write(
-            to: legacyFileURL(for: recordingID),
-            options: .atomic
-        )
-        return item
     }
 
     func recent(limit: Int = 30) throws -> [TranscriptHistoryItem] {
