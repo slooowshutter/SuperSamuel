@@ -68,9 +68,9 @@ Turning cleanup off delivers transcription directly. Cleanup is off by default.
 
 On macOS 26 and newer, the recording overlay and the settings window both use
 untinted native **regular Liquid Glass**, so the desktop shows through them. The
-overlay shows a radial waveform around the timer, an equalizer, and a line wave,
-all driven by the microphone level. The settings window has a native floating
-glass sidebar. Each page lists its controls with the label above each one. Older
+overlay shows the timer in a ring and a grid of the microphone level, read 20 times
+per second without smoothing. The settings window has a native floating glass
+sidebar. Each page lists its controls with the label above each one. Older
 macOS versions use the standard window look because native Liquid Glass is
 unavailable there.
 

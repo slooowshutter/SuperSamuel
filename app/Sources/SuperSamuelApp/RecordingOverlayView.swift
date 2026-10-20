@@ -1,9 +1,9 @@
 import AppKit
 import SwiftUI
 
-/// The floating recording window: a radial waveform around the timer, the dictation
-/// details with an equalizer, a line wave, and the live transcript where only the
-/// newest sentence is bright. It sits on the same Liquid Glass as Settings.
+/// The floating recording window: the timer in a ring, the dictation details with a
+/// level grid, and the live transcript where only the newest sentence is bright. It
+/// sits on the same Liquid Glass as Settings.
 struct RecordingOverlayView: View {
     @ObservedObject var state: AppState
     var onStop: (() -> Void)?
@@ -19,13 +19,11 @@ struct RecordingOverlayView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack(alignment: .top, spacing: 16) {
-                ZStack {
-                    RadialWaveformView(samples: state.waveformSamples)
-                    Text(elapsedText)
-                        .font(.system(size: 17, weight: .semibold, design: .rounded))
-                        .monospacedDigit()
-                }
-                .frame(width: 118, height: 118)
+                Text(elapsedText)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
+                    .monospacedDigit()
+                    .frame(width: 84, height: 84)
+                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.22), lineWidth: 2))
 
                 VStack(alignment: .leading, spacing: 7) {
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
@@ -41,13 +39,11 @@ struct RecordingOverlayView: View {
                     if let attachment = state.attachedScreenshot {
                         detailRow("camera", "Context: \(attachment.sourceDescription)")
                     }
-                    EqualizerView(samples: state.waveformSamples, isActive: isRecording)
-                        .frame(height: 24)
+                    LevelGrid(samples: state.waveformSamples, isActive: isRecording)
+                        .frame(height: 34)
                 }
             }
 
-            LineWaveView(samples: state.waveformSamples, isActive: isRecording)
-                .frame(height: 36)
             TranscriptView(state: state)
             notices
             recoveryActions
@@ -260,7 +256,7 @@ private extension RecordingOverlayView {
 
 // MARK: - Transcript
 
-/// The live transcript in large bold type, kept scrolled to the newest words. Only the
+/// The live transcript in semibold type, kept scrolled to the newest words. Only the
 /// newest sentence is bright, like live lyrics. Once the text is taller than the view,
 /// the oldest lines fade out at the top instead of being cut.
 private struct TranscriptView: View {
@@ -274,8 +270,8 @@ private struct TranscriptView: View {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: false) {
                     label
-                        .font(.system(size: 22, weight: .bold))
-                        .lineSpacing(4)
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineSpacing(3)
                         .frame(maxWidth: .infinity, alignment: .topLeading)
                         .background(
                             GeometryReader { text in

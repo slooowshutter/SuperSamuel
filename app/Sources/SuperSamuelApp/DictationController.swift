@@ -1017,8 +1017,9 @@ final class DictationController {
 
     private func startElapsedTimer() {
         elapsedTimer?.invalidate()
+        // 20 ticks per second keeps the level grid close to the voice.
         elapsedTimer = Timer.scheduledTimer(
-            withTimeInterval: 0.1,
+            withTimeInterval: 0.05,
             repeats: true
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
