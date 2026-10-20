@@ -1,5 +1,9 @@
+import AppKit
 import SwiftUI
 
+/// The floating recording window: the timer in a ring, the dictation details with a
+/// level grid, and the live transcript where only the newest sentence is bright. It
+/// sits on the same Liquid Glass as Settings.
 struct RecordingOverlayView: View {
     @ObservedObject var state: AppState
     var onStop: (() -> Void)?
@@ -8,337 +12,320 @@ struct RecordingOverlayView: View {
     var onRetry: (() -> Void)?
     var onDelete: (() -> Void)?
     var onCopy: (() -> Void)?
-    var onResize: ((CGSize, Bool) -> Void)?
+    /// Called while the user drags an edge or a corner, with the dragged edges.
+    /// `true` ends the drag.
+    var onResize: ((Edge.Set, Bool) -> Void)?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 13) {
-            header
-
-            WaveformView(
-                samples: state.waveformSamples,
-                color: statusColor
-            )
-            .frame(height: 32)
-
-            controlStrip
-
-            if let attachment = state.attachedScreenshot {
-                attachmentRow(attachment)
-            }
-
-            Divider()
-                .overlay(Color.white.opacity(0.13))
-
-            statusFooter
-                .frame(maxHeight: .infinity, alignment: .top)
-        }
-        .padding(.horizontal, 18)
-        .padding(.top, 16)
-        .padding(.bottom, 17)
-        .frame(
-            minWidth: 340,
-            maxWidth: .infinity,
-            minHeight: 300,
-            maxHeight: .infinity
-        )
-        .overlay(alignment: .bottomTrailing) {
-            resizeGrip
-        }
-        .environment(\.colorScheme, .dark)
-    }
-
-    private var resizeGrip: some View {
-        Image(systemName: "arrow.up.left.and.arrow.down.right")
-            .font(.system(size: 10, weight: .bold))
-            .foregroundStyle(Color.white.opacity(0.58))
-            .frame(width: 27, height: 27)
-            .background(
-                Color.black.opacity(0.18),
-                in: RoundedRectangle(cornerRadius: 8, style: .continuous)
-            )
-            .contentShape(Rectangle())
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .global)
-                    .onChanged { value in
-                        onResize?(value.translation, false)
-                    }
-                    .onEnded { value in
-                        onResize?(value.translation, true)
-                    }
-            )
-            .padding(7)
-            .help("Drag to resize")
-            .accessibilityLabel("Resize transcription window")
-    }
-
-    private var header: some View {
-        HStack(spacing: 11) {
-            ZStack {
-                Image(systemName: "waveform")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(statusColor)
-            }
-            .frame(width: 34, height: 34)
-            .liquidGlassSurface(cornerRadius: 9)
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("SuperSamuel")
-                    .font(.system(size: 13.5, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.96))
-
-                Text(statusLabel)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(statusColor.opacity(0.96))
-                    .lineLimit(1)
-            }
-
-            Spacer(minLength: 10)
-
-            HStack(spacing: 7) {
-                Circle()
-                    .fill(statusColor)
-                    .frame(width: 6, height: 6)
-
-                Text(formattedDuration(state.elapsedSeconds))
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .top, spacing: 16) {
+                Text(elapsedText)
+                    .font(.system(size: 17, weight: .semibold, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(Color.white.opacity(0.94))
-            }
+                    .frame(width: 84, height: 84)
+                    .overlay(Circle().strokeBorder(Color.primary.opacity(0.22), lineWidth: 2))
 
-            Button(action: { onStop?() }) {
-                Image(systemName: stopSymbol)
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 30, height: 30)
-            }
-            .liquidGlassButton()
-            .help(stopHelpText)
-        }
-    }
-
-    private var controlStrip: some View {
-        HStack(spacing: 10) {
-            Spacer(minLength: 6)
-
-            if state.attachedScreenshot == nil {
-                compactButton(
-                    title: state.isCapturingScreenshot ? "Capturing" : "Context",
-                    symbol: "camera",
-                    action: onAttachScreenshot,
-                    disabled: !canEditScreenshot || state.isCapturingScreenshot
-                )
-            } else {
-                compactButton(
-                    title: "Retake",
-                    symbol: "camera.rotate",
-                    action: onAttachScreenshot,
-                    disabled: !canEditScreenshot || state.isCapturingScreenshot
-                )
-
-                Button(action: { onClearScreenshot?() }) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 10.5, weight: .bold))
-                        .frame(width: 25, height: 25)
-                }
-                .liquidGlassButton()
-                .foregroundStyle(Color.white.opacity(0.78))
-                .disabled(!canEditScreenshot || state.isCapturingScreenshot)
-            }
-        }
-    }
-
-    private func attachmentRow(
-        _ attachment: AttachedScreenshot
-    ) -> some View {
-        HStack(spacing: 9) {
-            Image(nsImage: attachment.previewImage)
-                .resizable()
-                .aspectRatio(contentMode: .fill)
-                .frame(width: 50, height: 34)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 1) {
-                Text("Context attached")
-                    .font(.system(size: 11.5, weight: .semibold))
-                    .foregroundStyle(Color.white.opacity(0.9))
-
-                Text(attachment.sourceDescription)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(Color.white.opacity(0.56))
-                    .lineLimit(1)
-            }
-
-            Spacer()
-        }
-    }
-
-    private var statusFooter: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            if let message = state.captureStatusMessage {
-                Text(message)
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.orange)
-                    .fixedSize(horizontal: false, vertical: true)
-            } else if state.phase == .recording && state.liveInstructionsShortened {
-                Text("Live instructions limited to 1,024 characters · No extra transcription")
-                    .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(Color.white.opacity(0.56))
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            ScrollViewReader { proxy in
-                ScrollView(.vertical) {
-                    Text(footerText)
-                        .font(.system(size: 11.5, weight: .medium))
-                        .foregroundStyle(
-                            state.phase.isError
-                                ? Color.orange.opacity(0.96)
-                                : Color.white.opacity(0.66)
-                        )
-                        .textSelection(.enabled)
-                        .frame(
-                            maxWidth: .infinity,
-                            alignment: .topLeading
-                        )
-                        .id("transcript-bottom")
-                }
-                .frame(
-                    minHeight: state.phase == .recording ? 78 : 28,
-                    maxHeight: .infinity
-                )
-                .onChange(of: footerText) { _ in
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("transcript-bottom", anchor: .bottom)
+                VStack(alignment: .leading, spacing: 7) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text(isRecording ? "Dictation" : phaseTitle)
+                            .font(.title3.weight(.bold))
+                            .lineLimit(1)
+                        Spacer(minLength: 8)
+                        contextButton(size: 24)
+                        stopButton(size: 24)
                     }
+                    detailRow("clock", "Today, \(startTimeText)")
+                    detailRow("mic", deviceName ?? "Microphone off")
+                    if let attachment = state.attachedScreenshot {
+                        detailRow("camera", "Context: \(attachment.sourceDescription)")
+                    }
+                    LevelGrid(samples: state.waveformSamples, isActive: isRecording)
+                        .frame(height: 34)
                 }
             }
 
-            if state.showsRecoveryActions {
-                HStack(spacing: 8) {
-                    Button("Retry") {
-                        onRetry?()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(Color.accentColor)
-
-                    if state.canCopyRecoveredTranscript {
-                        Button("Copy") {
-                            onCopy?()
-                        }
-                        .buttonStyle(.bordered)
-                    }
-
-                    Button("Trash") {
-                        onDelete?()
-                    }
-                    .buttonStyle(.bordered)
-                }
-                .controlSize(.small)
-            }
+            TranscriptView(state: state)
+            notices
+            recoveryActions
         }
-    }
-
-    private func compactButton(
-        title: String,
-        symbol: String,
-        action: (() -> Void)?,
-        disabled: Bool
-    ) -> some View {
-        Button(action: { action?() }) {
-            HStack(spacing: 5) {
-                Image(systemName: symbol)
-                    .font(.system(size: 10.5, weight: .semibold))
-
-                Text(title)
-                    .font(.system(size: 11.5, weight: .semibold))
-            }
-            .padding(.horizontal, 10)
-            .frame(height: 27)
+        .padding(.horizontal, 22)
+        .padding(.top, 18)
+        .padding(.bottom, 20)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .overlay {
+            ResizeHandles(onResize: onResize)
         }
-        .liquidGlassButton()
-        .foregroundStyle(
-            disabled
-                ? Color.white.opacity(0.36)
-                : Color.white.opacity(0.86)
-        )
-        .disabled(disabled)
+        .animation(.easeOut(duration: 0.2), value: state.phase)
+        .animation(.easeOut(duration: 0.2), value: state.attachedScreenshot?.id)
+        .animation(.easeOut(duration: 0.2), value: state.showsRecoveryActions)
     }
+}
 
-    private var footerText: String {
-        if let screenshotMessage = state.screenshotStatusMessage,
-           !screenshotMessage.isEmpty
-        {
-            return screenshotMessage
-        }
+// MARK: - State
 
-        return state.transcriptText.isEmpty
-            ? "Press Option+Space to start dictation."
-            : state.transcriptText
-    }
-
-    private var statusLabel: String {
-        switch state.phase {
-        case .idle:
-            return state.captureStatusMessage == nil ? "Ready" : "Transcript saved"
-        case .recording:
-            if let deviceName = state.recordingDeviceName,
-               !deviceName.isEmpty
-            {
-                return "Recording · \(deviceName)"
-            }
-            return "Recording · System microphone"
-        case .transcribing:
-            return state.processingStatusMessage ?? "Transcribing"
-        case .error:
-            return "Needs attention"
-        }
-    }
-
-    private var statusColor: Color {
-        switch state.phase {
-        case .idle:
-            return Color.white.opacity(0.56)
-        case .recording:
-            return Color(red: 1, green: 0.31, blue: 0.38)
-        case .transcribing:
-            return Color(red: 0.38, green: 0.72, blue: 1)
-        case .error:
-            return Color.orange
-        }
-    }
-
-    private var canEditScreenshot: Bool {
+private extension RecordingOverlayView {
+    var isRecording: Bool {
         state.phase == .recording
     }
 
-    private var stopSymbol: String {
+    var elapsedText: String {
+        let whole = Int(state.elapsedSeconds.rounded(.down))
+        return String(format: "%02d:%02d", whole / 60, whole % 60)
+    }
+
+    /// The clock time when this recording started.
+    var startTimeText: String {
+        Date().addingTimeInterval(-state.elapsedSeconds).formatted(date: .omitted, time: .shortened)
+    }
+
+    var phaseTitle: String {
         switch state.phase {
-        case .recording:
-            return "stop.fill"
-        case .transcribing:
-            return "xmark"
-        case .idle, .error:
-            return "xmark"
+        case .idle: state.captureStatusMessage == nil ? "Ready" : "Transcript saved"
+        case .recording: "Recording"
+        case .transcribing: state.processingStatusMessage ?? "Transcribing"
+        case .error: "Needs attention"
         }
     }
 
-    private var stopHelpText: String {
+    /// The microphone in use. Only shown while recording.
+    var deviceName: String? {
+        guard isRecording else {
+            return nil
+        }
+        if let name = state.recordingDeviceName, !name.isEmpty {
+            return name
+        }
+        return "System microphone"
+    }
+
+    var stopHelpText: String {
         switch state.phase {
-        case .recording:
-            return "Stop recording"
-        case .transcribing:
-            return "Cancel processing"
-        case .idle, .error:
-            return "Dismiss"
+        case .recording: "Stop recording"
+        case .transcribing: "Cancel processing"
+        case .idle, .error: "Dismiss"
         }
     }
 
-    private func formattedDuration(_ seconds: TimeInterval) -> String {
-        let whole = Int(seconds.rounded(.down))
-        let minutes = whole / 60
-        let remaining = whole % 60
-        return String(format: "%02d:%02d", minutes, remaining)
+    var hasNotices: Bool {
+        state.captureStatusMessage != nil
+            || !(state.screenshotStatusMessage ?? "").isEmpty
+            || (isRecording && state.liveInstructionsShortened)
+    }
+}
+
+// MARK: - Controls
+
+private extension RecordingOverlayView {
+    func detailRow(_ symbol: String, _ text: String) -> some View {
+        Label {
+            Text(text)
+                .monospacedDigit()
+                .lineLimit(1)
+        } icon: {
+            Image(systemName: symbol)
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+        }
+        .font(.callout)
+    }
+
+    /// A round Liquid Glass button with one symbol.
+    func iconButton(
+        _ symbol: String,
+        size: CGFloat,
+        help: String,
+        action: (() -> Void)?
+    ) -> some View {
+        Button {
+            action?()
+        } label: {
+            Image(systemName: symbol)
+                .font(.system(size: size * 0.38, weight: .semibold))
+                .foregroundStyle(Color.primary)
+                .frame(width: size, height: size)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .liquidGlass(in: Circle(), interactive: true)
+        .help(help)
+        .accessibilityLabel(help)
+    }
+
+    /// Stop while recording, cancel while transcribing, dismiss otherwise.
+    func stopButton(size: CGFloat) -> some View {
+        iconButton(
+            isRecording ? "stop.fill" : "xmark",
+            size: size,
+            help: stopHelpText,
+            action: onStop
+        )
+    }
+
+    /// The screenshot control: a camera button, or the attached screenshot, which
+    /// retakes on click and has a badge to remove it.
+    @ViewBuilder
+    func contextButton(size: CGFloat) -> some View {
+        if let attachment = state.attachedScreenshot {
+            Button {
+                onAttachScreenshot?()
+            } label: {
+                Image(nsImage: attachment.previewImage)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .frame(width: size, height: size)
+                    .clipShape(RoundedRectangle(cornerRadius: size * 0.3, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: size * 0.3, style: .continuous)
+                            .strokeBorder(Color.white.opacity(0.28), lineWidth: 0.5)
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(!isRecording)
+            .help("Retake the screenshot of \(attachment.sourceDescription)")
+            .overlay(alignment: .topTrailing) {
+                if isRecording {
+                    Button {
+                        onClearScreenshot?()
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 14))
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(Color.white, Color.black.opacity(0.62))
+                    }
+                    .buttonStyle(.plain)
+                    .offset(x: 5, y: -5)
+                    .help("Remove the screenshot")
+                    .accessibilityLabel("Remove the screenshot")
+                }
+            }
+        } else if isRecording {
+            iconButton(
+                state.isCapturingScreenshot ? "camera.badge.ellipsis" : "camera",
+                size: size,
+                help: "Attach a screenshot of the current window as context",
+                action: onAttachScreenshot
+            )
+        }
+    }
+
+    @ViewBuilder
+    var recoveryActions: some View {
+        if state.showsRecoveryActions {
+            HStack(spacing: 8) {
+                Button("Retry") { onRetry?() }
+                    .liquidGlassButton(prominent: true)
+                if state.canCopyRecoveredTranscript {
+                    Button("Copy") { onCopy?() }
+                        .liquidGlassButton()
+                }
+                Button("Trash") { onDelete?() }
+                    .liquidGlassButton()
+            }
+            .controlSize(.small)
+        }
+    }
+
+    @ViewBuilder
+    var notices: some View {
+        if hasNotices {
+            VStack(alignment: .leading, spacing: 4) {
+                if let message = state.captureStatusMessage {
+                    noticeText(message, color: .orange)
+                }
+                if let message = state.screenshotStatusMessage, !message.isEmpty {
+                    noticeText(message, color: .orange)
+                }
+                if isRecording && state.liveInstructionsShortened {
+                    noticeText(
+                        "Live instructions limited to 1,024 characters · No extra transcription",
+                        color: .secondary
+                    )
+                }
+            }
+        }
+    }
+
+    func noticeText(_ text: String, color: Color) -> some View {
+        Text(text)
+            .font(.callout)
+            .foregroundStyle(color)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+// MARK: - Transcript
+
+/// The live transcript in semibold type, kept scrolled to the newest words. Only the
+/// newest sentence is bright, like live lyrics. Once the text is taller than the view,
+/// the oldest lines fade out at the top instead of being cut.
+private struct TranscriptView: View {
+    @ObservedObject var state: AppState
+    @State private var textHeight: CGFloat = 0
+
+    private static let end = "transcript-end"
+
+    var body: some View {
+        GeometryReader { viewport in
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: false) {
+                    label
+                        .font(.system(size: 17, weight: .semibold))
+                        .lineSpacing(3)
+                        .frame(maxWidth: .infinity, alignment: .topLeading)
+                        .background(
+                            GeometryReader { text in
+                                Color.clear
+                                    .onAppear { textHeight = text.size.height }
+                                    .onChange(of: text.size.height) { textHeight = $0 }
+                            }
+                        )
+                        .id(Self.end)
+                }
+                .onAppear {
+                    proxy.scrollTo(Self.end, anchor: .bottom)
+                }
+                .onChange(of: state.transcriptText) { _ in
+                    DispatchQueue.main.async {
+                        proxy.scrollTo(Self.end, anchor: .bottom)
+                    }
+                }
+            }
+            .mask {
+                VStack(spacing: 0) {
+                    LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom)
+                        .frame(height: textHeight > viewport.size.height + 1 ? 26 : 0)
+                    Color.black
+                }
+            }
+        }
+    }
+
+    private var label: Text {
+        guard !state.transcriptIsStatus else {
+            return Text(state.transcriptText)
+                .foregroundColor(state.phase.isError ? .orange : .secondary)
+        }
+        let sentences = state.transcriptText.sentences
+        return sentences.enumerated().reduce(Text("")) { result, item in
+            let isLatest = item.offset == sentences.count - 1
+            return result + Text((item.offset == 0 ? "" : " ") + item.element)
+                .foregroundColor(isLatest ? .primary : Color.primary.opacity(0.3))
+        }
+    }
+}
+
+private extension String {
+    var sentences: [String] {
+        var result: [String] = []
+        enumerateSubstrings(in: startIndex..., options: .bySentences) { sentence, _, _, _ in
+            if let sentence = sentence?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !sentence.isEmpty
+            {
+                result.append(sentence)
+            }
+        }
+        return result.isEmpty ? [self] : result
     }
 }
 
@@ -351,45 +338,78 @@ private extension DictationPhase {
     }
 }
 
-private struct WaveformView: View {
-    let samples: [CGFloat]
-    let color: Color
+// MARK: - Resizing
 
-    private let spacing: CGFloat = 2
+/// Invisible strips along the edges and corners of the borderless window. Dragging
+/// one resizes the window from that side.
+private struct ResizeHandles: View {
+    let onResize: ((Edge.Set, Bool) -> Void)?
+
+    private let edge: CGFloat = 6
+    private let corner: CGFloat = 22
 
     var body: some View {
-        GeometryReader { geometry in
-            HStack(alignment: .center, spacing: spacing) {
-                ForEach(Array(samples.enumerated()), id: \.offset) { _, sample in
-                    Capsule(style: .continuous)
-                        .fill(color.opacity(0.38 + (sample * 0.58)))
-                        .frame(
-                            width: barWidth(in: geometry.size.width),
-                            height: barHeight(sample)
-                        )
+        Color.clear
+            .overlay(alignment: .top) {
+                handle(.top).frame(height: edge).padding(.horizontal, corner)
+            }
+            .overlay(alignment: .bottom) {
+                handle(.bottom).frame(height: edge).padding(.horizontal, corner)
+            }
+            .overlay(alignment: .leading) {
+                handle(.leading).frame(width: edge).padding(.vertical, corner)
+            }
+            .overlay(alignment: .trailing) {
+                handle(.trailing).frame(width: edge).padding(.vertical, corner)
+            }
+            .overlay(alignment: .topLeading) {
+                handle([.top, .leading]).frame(width: corner, height: corner)
+            }
+            .overlay(alignment: .topTrailing) {
+                handle([.top, .trailing]).frame(width: corner, height: corner)
+            }
+            .overlay(alignment: .bottomLeading) {
+                handle([.bottom, .leading]).frame(width: corner, height: corner)
+            }
+            .overlay(alignment: .bottomTrailing) {
+                handle([.bottom, .trailing]).frame(width: corner, height: corner)
+            }
+    }
+
+    private func handle(_ edges: Edge.Set) -> some View {
+        Color.clear
+            .contentShape(Rectangle())
+            .onHover { isInside in
+                if isInside {
+                    Self.cursor(for: edges).push()
+                } else {
+                    NSCursor.pop()
                 }
             }
-            .frame(
-                maxWidth: .infinity,
-                maxHeight: .infinity,
-                alignment: .center
+            .gesture(
+                DragGesture(minimumDistance: 1)
+                    .onChanged { _ in onResize?(edges, false) }
+                    .onEnded { _ in onResize?(edges, true) }
             )
-        }
+            .accessibilityHidden(true)
     }
 
-    private func barWidth(in totalWidth: CGFloat) -> CGFloat {
-        guard !samples.isEmpty else {
-            return 2
+    private static func cursor(for edges: Edge.Set) -> NSCursor {
+        guard #available(macOS 15.0, *) else {
+            return edges.contains(.leading) || edges.contains(.trailing)
+                ? .resizeLeftRight
+                : .resizeUpDown
         }
-
-        let totalSpacing = CGFloat(samples.count - 1) * spacing
-        return max(
-            1.2,
-            (totalWidth - totalSpacing) / CGFloat(samples.count)
-        )
-    }
-
-    private func barHeight(_ sample: CGFloat) -> CGFloat {
-        2.5 + (26 * pow(max(0, min(sample, 1)), 1.55))
+        let position: NSCursor.FrameResizePosition = switch edges {
+        case [.top, .leading]: .topLeft
+        case [.top, .trailing]: .topRight
+        case [.bottom, .leading]: .bottomLeft
+        case [.bottom, .trailing]: .bottomRight
+        case .top: .top
+        case .bottom: .bottom
+        case .leading: .left
+        default: .right
+        }
+        return .frameResize(position: position, directions: .all)
     }
 }

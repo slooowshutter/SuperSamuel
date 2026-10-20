@@ -19,17 +19,18 @@ The deployed `gpt-live-transcribe` API rejects server-side turn detection, so th
 session uses `turn_detection: null`; the 500 ms threshold stays in the capture path.
 
 The recording overlay keeps the complete live transcript in a scrollable area,
-shows about five lines at its default size, and can be resized by dragging its
-bottom-right resize grip. Settings includes the persistent GPT Live Transcribe
-delay presets **Minimal**, **Low**, **Medium**, **High**, and **X-high** (default).
-Model delay and the 500 ms speech-pause threshold are separate controls; presets
-are not converted into estimated milliseconds. Dictionary, cleanup instructions,
-and delay changes apply to the next recording. Screenshot updates retain that
-recording's configuration. Recognition has no editing prompt. The personal
-dictionary is sent separately as live keywords, and optional screenshot context
-is limited to the first 1,024 Unicode scalars. Full screenshot context remains
-available for saved-audio fallback. The saved-audio model field accepts STT
-models; editing happens in the optional cleanup step below.
+with only the newest sentence at full brightness. Drag any edge or corner to
+resize the overlay; it reopens at the last size. Settings includes the persistent
+GPT Live Transcribe delay presets **Minimal**, **Low**, **Medium**, **High**, and
+**X-high** (default). Model delay and the 500 ms speech-pause threshold are
+separate controls; presets are not converted into estimated milliseconds.
+Dictionary, cleanup instructions, and delay changes apply to the next recording.
+Screenshot updates retain that recording's configuration. Recognition has no
+editing prompt. The personal dictionary is sent separately as live keywords, and
+optional screenshot context is limited to the first 1,024 Unicode scalars. Full
+screenshot context remains available for saved-audio fallback. The saved-audio
+model field accepts STT models; editing happens in the optional cleanup step
+below.
 
 ## Optional text cleanup
 
@@ -65,13 +66,13 @@ If cleanup fails or is cancelled, the draft remains available. Retrying that cle
 reuses the draft; changing cleanup settings only invalidates the edited result.
 Turning cleanup off delivers transcription directly. Cleanup is off by default.
 
-On macOS 26 and newer, the compact notification-style recording overlay uses
-untinted native **clear Liquid Glass** across its full surface, with clear-glass
-controls. A subtle moving chromatic backdrop gives the untinted glass light to
-refract even above nearly black applications. The settings window has a native
-floating glass sidebar over a regular Liquid Glass background. Each page lists
-its controls with the label above each one. Older macOS versions use the
-standard window look because native Liquid Glass is unavailable there.
+On macOS 26 and newer, the recording overlay and the settings window both use
+untinted native **regular Liquid Glass**, so the desktop shows through them. The
+overlay shows the timer in a ring and a grid of the microphone level, read 20 times
+per second without smoothing. The settings window has a native floating glass
+sidebar. Each page lists its controls with the label above each one. Older
+macOS versions use the standard window look because native Liquid Glass is
+unavailable there.
 
 ## Requirements
 

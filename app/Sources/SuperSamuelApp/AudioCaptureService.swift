@@ -83,7 +83,6 @@ final class AudioCaptureService: NSObject, AVAudioRecorderDelegate {
     private let clock: () -> TimeInterval
     private var recorder: (any AudioRecording)?
     private var recordingActivity: NSObjectProtocol?
-    private var displayedLevel: Float = 0
     private var progress = AudioCaptureProgress(startedAt: 0)
     private var recorderError: String?
     private(set) var inputDevice: AudioInputDeviceInfo?
@@ -166,7 +165,6 @@ final class AudioCaptureService: NSObject, AVAudioRecorderDelegate {
             options: [.idleSystemSleepDisabled, .idleDisplaySleepDisabled],
             reason: "SuperSamuel is recording audio"
         )
-        displayedLevel = 0
         return device
     }
 
@@ -197,7 +195,6 @@ final class AudioCaptureService: NSObject, AVAudioRecorderDelegate {
         recorder.delegate = nil
         recorder.stop()
         self.recorder = nil
-        displayedLevel = 0
 
         // A stopped AVAudioRecorder reports currentTime == 0. Read the finalized file when
         // possible, retaining the last observed position if an interrupted file is unreadable.
@@ -225,10 +222,7 @@ final class AudioCaptureService: NSObject, AVAudioRecorderDelegate {
         observeProgress(recorder)
         recorder.updateMeters()
         let decibels = recorder.averagePower(forChannel: 0)
-        let target = pow(min(max((decibels + 50) / 50, 0), 1), 1.5)
-        displayedLevel += (target - displayedLevel) *
-            (target > displayedLevel ? 0.55 : 0.22)
-        return displayedLevel
+        return pow(min(max((decibels + 50) / 50, 0), 1), 1.5)
     }
 
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {

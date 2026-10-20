@@ -3,9 +3,12 @@ import SwiftUI
 
 @MainActor
 final class OverlayWindowController {
+    /// The defaults name under which AppKit keeps the window frame between launches.
+    private static let frameName = "RecordingOverlay"
+
     private let state: AppState
     private var panel: NSPanel?
-    private var resizeStartFrame: NSRect?
+    private var resizeStart: (frame: NSRect, mouse: NSPoint)?
     var onStop: (() -> Void)?
     var onAttachScreenshot: (() -> Void)?
     var onClearScreenshot: (() -> Void)?
@@ -36,7 +39,7 @@ final class OverlayWindowController {
         }
 
         let panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 376, height: 340),
+            contentRect: NSRect(origin: .zero, size: OverlayResizeGeometry.defaultSize),
             styleMask: [.nonactivatingPanel, .borderless, .resizable],
             backing: .buffered,
             defer: false
@@ -52,14 +55,10 @@ final class OverlayWindowController {
         panel.isMovableByWindowBackground = true
         panel.contentMinSize = OverlayResizeGeometry.minimumSize
         panel.contentMaxSize = OverlayResizeGeometry.maximumSize
+        // Reopen at the size the user chose last time, and save every new size.
+        panel.setFrameUsingName(Self.frameName)
+        panel.setFrameAutosaveName(Self.frameName)
 
-        updatePanelContent(panel)
-
-        self.panel = panel
-        return panel
-    }
-
-    private func updatePanelContent(_ panel: NSPanel) {
         let contentView = RecordingOverlayView(
             state: state,
             onStop: onStop,
@@ -68,50 +67,32 @@ final class OverlayWindowController {
             onRetry: onRetry,
             onDelete: onDelete,
             onCopy: onCopy,
-            onResize: { [weak self, weak panel] translation, ended in
+            onResize: { [weak self, weak panel] edges, ended in
                 guard let self, let panel else {
                     return
                 }
-                self.resize(
-                    panel,
-                    translation: translation,
-                    ended: ended
-                )
+                self.resize(panel, edges: edges, ended: ended)
             }
         )
         let host = NSHostingView(rootView: contentView)
-        host.wantsLayer = true
-        host.layer?.backgroundColor = NSColor.clear.cgColor
-        host.frame = panel.contentView?.bounds ?? .zero
-        host.autoresizingMask = [.width, .height]
-        panel.contentView = makeLiquidGlassHost(
-            content: host,
-            cornerRadius: 22
-        )
+        host.frame = NSRect(origin: .zero, size: panel.frame.size)
+        panel.contentView = makeLiquidGlassHost(content: host, cornerRadius: 26)
+
+        self.panel = panel
+        return panel
     }
 
-    private func resize(
-        _ panel: NSPanel,
-        translation: CGSize,
-        ended: Bool
-    ) {
-        if resizeStartFrame == nil {
-            resizeStartFrame = panel.frame
-        }
-
-        guard let startingFrame = resizeStartFrame else {
-            return
-        }
-
-        let resizedFrame = OverlayResizeGeometry.resizedFrame(
-            from: startingFrame,
-            translation: translation
+    /// Follows the pointer in screen coordinates, so the window can move under it
+    /// while a left or top edge is dragged.
+    private func resize(_ panel: NSPanel, edges: Edge.Set, ended: Bool) {
+        let mouse = NSEvent.mouseLocation
+        let start = resizeStart ?? (panel.frame, mouse)
+        resizeStart = ended ? nil : start
+        let delta = CGSize(width: mouse.x - start.mouse.x, height: mouse.y - start.mouse.y)
+        panel.setFrame(
+            OverlayResizeGeometry.resizedFrame(from: start.frame, by: delta, edges: edges),
+            display: true
         )
-        panel.setFrame(resizedFrame, display: true)
-
-        if ended {
-            resizeStartFrame = nil
-        }
     }
 
     private func center(_ panel: NSPanel) {
@@ -127,25 +108,25 @@ final class OverlayWindowController {
 }
 
 enum OverlayResizeGeometry {
-    static let minimumSize = NSSize(width: 340, height: 300)
-    static let maximumSize = NSSize(width: 900, height: 800)
+    static let defaultSize = NSSize(width: 640, height: 420)
+    static let minimumSize = NSSize(width: 520, height: 360)
+    static let maximumSize = NSSize(width: 1200, height: 900)
 
-    static func resizedFrame(
-        from startingFrame: NSRect,
-        translation: CGSize
-    ) -> NSRect {
-        let width = min(
-            maximumSize.width,
-            max(minimumSize.width, startingFrame.width + translation.width)
-        )
-        let height = min(
-            maximumSize.height,
-            max(minimumSize.height, startingFrame.height + translation.height)
-        )
+    /// The frame after the user drags `edges` of `frame` by `delta`, in screen
+    /// coordinates. The opposite edges stay where they are.
+    static func resizedFrame(from frame: NSRect, by delta: CGSize, edges: Edge.Set) -> NSRect {
+        var width = frame.width
+        var height = frame.height
+        if edges.contains(.leading) { width -= delta.width }
+        if edges.contains(.trailing) { width += delta.width }
+        if edges.contains(.top) { height += delta.height }
+        if edges.contains(.bottom) { height -= delta.height }
+        width = min(max(width, minimumSize.width), maximumSize.width)
+        height = min(max(height, minimumSize.height), maximumSize.height)
 
         return NSRect(
-            x: startingFrame.minX,
-            y: startingFrame.maxY - height,
+            x: edges.contains(.leading) ? frame.maxX - width : frame.minX,
+            y: edges.contains(.bottom) ? frame.maxY - height : frame.minY,
             width: width,
             height: height
         )

@@ -14,6 +14,8 @@ final class AppState: ObservableObject {
     @Published var elapsedSeconds: TimeInterval = 0
     @Published var waveformSamples: [CGFloat] = Array(repeating: 0, count: 96)
     @Published var transcriptText = "Press Option+Space to start dictation."
+    /// True when `transcriptText` holds a status message instead of spoken words.
+    @Published private(set) var transcriptIsStatus = true
     @Published var attachedScreenshot: AttachedScreenshot?
     @Published var screenshotStatusMessage: String?
     @Published var isCapturingScreenshot = false
@@ -46,23 +48,24 @@ final class AppState: ObservableObject {
     func setTranscriptPreview(fullText: String) {
         let trimmed = fullText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else {
-            transcriptText = "No speech was detected."
+            setProgressMessage("No speech was detected.")
             return
         }
 
         transcriptText = trimmed
-
+        transcriptIsStatus = false
     }
 
     func setProgressMessage(_ message: String) {
         transcriptText = message
+        transcriptIsStatus = true
     }
 
     func resetForRecording(deviceName: String) {
         setPhase(.recording)
         setElapsed(seconds: 0)
         waveformSamples = Array(repeating: 0, count: maxWaveSamples)
-        transcriptText = "Recording locally..."
+        setProgressMessage("Recording locally...")
         recordingDeviceName = deviceName
         captureStatusMessage = nil
         liveInstructionsShortened = false
