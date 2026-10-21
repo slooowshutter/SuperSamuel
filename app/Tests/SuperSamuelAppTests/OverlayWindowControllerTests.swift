@@ -48,4 +48,33 @@ final class OverlayWindowControllerTests: XCTestCase {
         XCTAssertEqual(maximumFrame.size, OverlayResizeGeometry.maximumSize)
         XCTAssertEqual(maximumFrame.maxX, startingFrame.maxX)
     }
+
+    func testResizeKeepsTheHeightInsideTheScreen() {
+        let resizedFrame = OverlayResizeGeometry.resizedFrame(
+            from: startingFrame,
+            by: CGSize(width: 0, height: 2_000),
+            edges: .top,
+            screenHeight: 700
+        )
+
+        XCTAssertEqual(resizedFrame.height, 700)
+        XCTAssertEqual(resizedFrame.minY, startingFrame.minY)
+    }
+
+    /// SwiftUI must not size the window. A wrapped notice once grew it past the screen.
+    @MainActor
+    func testLongNoticeDoesNotGrowTheWindow() {
+        let state = AppState()
+        let panel = OverlayWindowController(state: state).ensurePanel()
+        let size = panel.frame.size
+
+        state.resetForRecording(deviceName: "Microphone")
+        state.liveInstructionsShortened = true
+        state.captureStatusMessage = String(repeating: "The microphone stopped. ", count: 20)
+        state.setTranscriptPreview(fullText: String(repeating: "A spoken sentence. ", count: 200))
+        RunLoop.main.run(until: Date().addingTimeInterval(0.2))
+        panel.layoutIfNeeded()
+
+        XCTAssertEqual(panel.frame.size, size)
+    }
 }
