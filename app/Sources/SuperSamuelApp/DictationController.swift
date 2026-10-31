@@ -9,7 +9,6 @@ private let timing = Logger(subsystem: "com.supersamuel.app", category: "Timing"
 private struct DeliveryOptions {
     let targetApplication: NSRunningApplication?
     let autoPaste: Bool
-    let restoreClipboard: Bool
 }
 
 @MainActor
@@ -400,8 +399,7 @@ final class DictationController {
             realtimeSession: realtimeSession,
             delivery: DeliveryOptions(
                 targetApplication: pasteTarget,
-                autoPaste: settings.autoPaste,
-                restoreClipboard: settings.restoreClipboard
+                autoPaste: settings.autoPaste
             )
         )
     }
@@ -743,10 +741,9 @@ final class DictationController {
         textInsertion.deliver(
             text: transcript,
             targetApplication: delivery.targetApplication,
-            autoPaste: canAutoPaste,
-            restoreClipboard: delivery.restoreClipboard
+            autoPaste: canAutoPaste
         )
-        timing.notice("Paste sent: \(self.msSinceStop) ms after Stop")
+        timing.notice("Transcript copied; auto-paste enabled: \(canAutoPaste), \(self.msSinceStop) ms after Stop")
 
         appState.setPhase(.idle)
         appState.setElapsed(seconds: 0)
@@ -829,8 +826,7 @@ final class DictationController {
             sessionID,
             delivery: DeliveryOptions(
                 targetApplication: targetApplication ?? currentPasteTarget(),
-                autoPaste: settings.autoPaste,
-                restoreClipboard: settings.restoreClipboard
+                autoPaste: settings.autoPaste
             )
         )
     }

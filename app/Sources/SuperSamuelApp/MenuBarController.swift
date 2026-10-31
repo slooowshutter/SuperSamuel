@@ -44,11 +44,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         action: nil,
         keyEquivalent: ""
     )
-    private let restoreClipboardItem = NSMenuItem(
-        title: "Restore Clipboard",
-        action: nil,
-        keyEquivalent: ""
-    )
     private let openAtLoginItem = NSMenuItem(
         title: "Open at Login",
         action: nil,
@@ -132,9 +127,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         autoPasteItem.target = self
         autoPasteItem.action = #selector(handleToggleAutoPaste)
 
-        restoreClipboardItem.target = self
-        restoreClipboardItem.action = #selector(handleToggleRestoreClipboard)
-
         openAtLoginItem.target = self
         openAtLoginItem.action = #selector(handleToggleOpenAtLogin)
 
@@ -153,7 +145,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
         menu.addItem(historyItem)
         menu.addItem(.separator())
         menu.addItem(autoPasteItem)
-        menu.addItem(restoreClipboardItem)
         menu.addItem(openAtLoginItem)
         menu.addItem(.separator())
         menu.addItem(openSettingsItem)
@@ -295,8 +286,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
 
     private func refreshCheckmarks() {
         autoPasteItem.state = settings.autoPaste ? .on : .off
-        restoreClipboardItem.state = settings.restoreClipboard ? .on : .off
-        restoreClipboardItem.isEnabled = settings.autoPaste
         openAtLoginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
     }
 
@@ -342,12 +331,6 @@ final class MenuBarController: NSObject, NSMenuDelegate {
     @objc
     private func handleToggleAutoPaste() {
         settings.autoPaste.toggle()
-        refreshCheckmarks()
-    }
-
-    @objc
-    private func handleToggleRestoreClipboard() {
-        settings.restoreClipboard.toggle()
         refreshCheckmarks()
     }
 
