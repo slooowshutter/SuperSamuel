@@ -76,3 +76,9 @@ Not STE:
 > 3. Say one sentence.
 > 4. Press Option+Space to stop the recording.
 > 5. Make sure that the transcript appears in the active app.
+
+## Install after each change
+
+Marc tests the installed app, so a code change is done only when that app runs it. After the build and tests pass, run `./rebuild-app.sh`. It builds, signs, installs, and relaunches `~/Applications/SuperSamuel.app`, and macOS keeps its permissions.
+
+The relaunch quits the running app and cuts any recording in progress. Run it only when SuperSamuel is idle: no manifest in `~/Library/Application Support/SuperSamuel/Recordings/*/manifest.json` has the status `recording` or `processing` with a file written in the last 20 seconds. If SuperSamuel is busy, wait in a background job, then install.

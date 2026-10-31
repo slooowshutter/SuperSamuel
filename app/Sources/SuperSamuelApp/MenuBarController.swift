@@ -97,7 +97,7 @@ final class MenuBarController: NSObject, NSMenuDelegate {
             toggleRecordingItem.title = "Stop Recording (Option+Space)"
         case .transcribing:
             button.title = "SS ..."
-            toggleRecordingItem.title = "Cancel Transcription (Option+Space)"
+            toggleRecordingItem.title = "Cancel Transcription"
         case .error:
             button.title = "SS ERR"
             toggleRecordingItem.title = "Start Recording (Option+Space)"

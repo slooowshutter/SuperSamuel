@@ -266,6 +266,24 @@ final class RealtimeTranscriptionServiceTests: XCTestCase {
     }
 
     @MainActor
+    func testStopReturnsTheLiveTextWhenTheFinalTextIsLate() async throws {
+        let socket = FakeRealtimeSocket()
+        let service = RealtimeTranscriptionService(makeSocket: { _ in socket }) { _ in }
+        defer { service.cancel() }
+        try await service.start(apiKey: "test", transcriptionContext: "")
+        service.appendAudio(pcm(milliseconds: 200, amplitude: 0.1))
+        socket.push(["type": "conversation.item.input_audio_transcription.delta", "item_id": "only", "delta": "Words so far"])
+        try await waitUntil { service.currentTranscript == "Words so far" }
+        let result = Task { try await service.finish(maximumWait: 0.1) }
+        try await waitUntil { socket.commits.count == 1 }
+        socket.push(["type": "input_audio_buffer.committed", "item_id": "only"])
+        // No completion arrives. Stop must not wait for it.
+        let transcript = try await result.value
+        XCTAssertEqual(transcript, "Words so far")
+        XCTAssertTrue(socket.cancelled)
+    }
+
+    @MainActor
     func testPendingTurnFailureCannotReturnEarlierCompletedFragment() async throws {
         let socket = FakeRealtimeSocket()
         let service = RealtimeTranscriptionService(makeSocket: { _ in socket }) { _ in }

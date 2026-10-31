@@ -262,8 +262,8 @@ final class OpenRouterServiceTests: XCTestCase {
                 apiKey: "test-key",
                 onProgress: { _ in }
             )
-            XCTFail("Uncertain empty output must preserve the recording")
-        } catch OpenRouterServiceError.emptyTranscript {}
+            XCTFail("Empty output for the only part must count as no speech")
+        } catch OpenRouterServiceError.noSpeechDetected {}
         XCTAssertNoThrow(try recordingStore.load(session.id))
         XCTAssertNil(try historyStore.item(id: session.id))
     }
@@ -453,7 +453,7 @@ final class OpenRouterServiceTests: XCTestCase {
     }
 
     @MainActor
-    func testGeminiCleanupUsesTextOnlyAndRetriesWithoutRetranscription() async throws {
+    func testGeminiCleanupUsesTextOnlyAndDeliversTheDraftWhenItFails() async throws {
         for failsFirst in [false, true] {
             let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -496,23 +496,14 @@ final class OpenRouterServiceTests: XCTestCase {
             configuration.protocolClasses = [URLProtocolStub.self]
             let service = OpenRouterService(urlSession: URLSession(configuration: configuration))
             let processor = RecordingProcessor(recordingStore: store, historyStore: history, openRouterService: service, cleanupService: service)
-            if failsFirst {
-                do {
-                    _ = try await processor.process(sessionID: session.id, apiKey: "key", preferredTranscript: "Um, test Gemini 3.8.", onProgress: { _ in })
-                    XCTFail("Cleanup failure must remain retryable")
-                } catch OpenRouterServiceError.requestFailed {}
-                XCTAssertEqual(store.draftTranscript(sessionID: session.id), "Um, test Gemini 3.8.")
-                XCTAssertNil(store.finalTranscript(sessionID: session.id))
-                XCTAssertNil(try history.item(id: session.id))
-                try store.prepareForProcessing(sessionID: session.id, cleanup: cleanup, screenshotSourceURL: nil)
-            }
             let result = try await processor.process(
                 sessionID: session.id, apiKey: "key",
-                preferredTranscript: failsFirst ? nil : "Um, test Gemini 3.8.",
+                preferredTranscript: "Um, test Gemini 3.8.",
                 onProgress: { XCTAssertEqual($0.stage, .cleaningUp) }
             )
-            XCTAssertEqual(result.transcript, "Test Gemini 3.8.")
-            XCTAssertEqual(count.value, failsFirst ? 2 : 1)
+            // A failed cleanup is not an error: the draft is delivered and archived.
+            XCTAssertEqual(result.transcript, failsFirst ? "Um, test Gemini 3.8." : "Test Gemini 3.8.")
+            XCTAssertEqual(count.value, 1)
             XCTAssertEqual(try history.metadata(id: session.id)?.workflow.cleanup, cleanup)
             XCTAssertEqual(try history.metadata(id: session.id)?.workflow.workflow, .transcriptionThenCleanup)
             let archive = try XCTUnwrap(history.artifactURL(for: session.id))
