@@ -249,6 +249,13 @@ the menu bar shows `SS ...`, and the result is pasted. Option+Space does nothing
 while the transcript finishes, so a second press just after Stop cannot cancel it.
 To cancel, choose **Cancel Transcription** in the menu bar.
 
+SuperSamuel keeps the latest transcript in the clipboard after automatic paste.
+If the focused field does not accept Paste, press Command+V to paste the transcript
+yourself. The app no longer restores the previous clipboard. If the target app
+needs to become active, SuperSamuel waits up to one second before it sends Paste.
+If activation fails, the transcript stays in the clipboard. A new copy or a newer
+transcript cancels a pending Paste request.
+
 If live transcription heard no words, the recording counts as no speech at once,
 without a second request to OpenRouter, and moves to the macOS Trash. A one-part
 recording that OpenRouter returns as empty also counts as no speech.
@@ -342,8 +349,9 @@ measured synthetic timings, and remaining hardware checks.
 - Record silence, then retry a failed recording after changing its dictionary.
 - Confirm transcription instructions affect filler removal and expected terms.
 - Test automatic paste in Notes, a browser textarea, and a code editor.
-- Test clipboard restoration, including copying something else before the
-  delayed restoration runs; the newer copy must survive.
+- Confirm that the transcript stays in the clipboard after automatic paste.
+- Copy another item before the target app becomes active. Confirm that the new
+  copy survives and that the app cancels the pending Paste request.
 - Test screenshot context with locally extracted OCR text.
 - Quit during recording and confirm the saved recording appears after relaunch.
 - Confirm completed transcripts appear in **Transcript History**.

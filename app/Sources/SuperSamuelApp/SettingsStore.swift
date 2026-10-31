@@ -62,7 +62,6 @@ enum RealtimeTranscriptionAvailability: Equatable {
 final class SettingsStore {
     private enum Keys {
         static let autoPaste = "autoPaste"
-        static let restoreClipboard = "restoreClipboard"
         static let realtimeTranscriptionEnabled = "realtimeTranscriptionEnabled"
         static let transcriptionDelay = "realtimeTranscriptionDelay"
         static let personalDictionary = "personalDictionary"
@@ -102,11 +101,6 @@ final class SettingsStore {
     var autoPaste: Bool {
         get { defaults.bool(forKey: Keys.autoPaste) }
         set { defaults.set(newValue, forKey: Keys.autoPaste) }
-    }
-
-    var restoreClipboard: Bool {
-        get { defaults.bool(forKey: Keys.restoreClipboard) }
-        set { defaults.set(newValue, forKey: Keys.restoreClipboard) }
     }
 
     var openRouterAPIKey: String {
@@ -229,7 +223,6 @@ final class SettingsStore {
     private func registerDefaults() {
         defaults.register(defaults: [
             Keys.autoPaste: true,
-            Keys.restoreClipboard: true,
             Keys.realtimeTranscriptionEnabled: true,
             Keys.transcriptionDelay: TranscriptionDelay.xhigh.rawValue,
             Keys.personalDictionary: [String](),
