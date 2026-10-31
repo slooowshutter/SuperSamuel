@@ -161,6 +161,9 @@ actor OpenRouterService: RecordingTranscriptionService, TranscriptCleanupService
                 "effort": selectedModel.hasPrefix("google/gemini-3.8") ? "low" : "minimal",
                 "exclude": true
             ]
+        } else if selectedModel.hasPrefix("openai/gpt-oss") {
+            // Cleanup is simple editing. Low effort removes most of the thinking time.
+            payload["reasoning"] = ["effort": "low", "exclude": true]
         } else if selectedModel.hasPrefix("google/gemini-2.5") {
             payload["reasoning"] = [
                 "max_tokens": 0,
@@ -168,7 +171,8 @@ actor OpenRouterService: RecordingTranscriptionService, TranscriptCleanupService
             ]
         }
 
-        let response = try await post(payload, to: chatURL, apiKey: apiKey)
+        // Cleanup is optional. After 20 seconds, the app pastes the draft instead.
+        let response = try await post(payload, to: chatURL, apiKey: apiKey, timeout: 20)
         guard
             let choices = response["choices"] as? [[String: Any]],
             let message = choices.first?["message"] as? [String: Any],
@@ -184,12 +188,14 @@ actor OpenRouterService: RecordingTranscriptionService, TranscriptCleanupService
         return text
     }
 
-    private func post(_ payload: [String: Any], to url: URL, apiKey: String) async throws -> [String: Any] {
+    private func post(
+        _ payload: [String: Any], to url: URL, apiKey: String, timeout: TimeInterval = 120
+    ) async throws -> [String: Any] {
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 120
+        request.timeoutInterval = timeout
         request.httpBody = try JSONSerialization.data(withJSONObject: payload)
 
         let (data, response) = try await urlSession.data(for: request)

@@ -14,7 +14,9 @@ SuperSamuel is a small native macOS dictation app:
 
 Realtime transcription uses a direct authenticated WebSocket connection. A local
 PCM speech-pause detector commits a turn after 500 ms of low-energy audio following
-speech. Stop explicitly commits remaining audio and waits for all committed turns.
+speech. Stop explicitly commits remaining audio. When live text exists, Stop waits for
+the final text of the last turn until 0.3 seconds after the key press, then pastes
+the text received so far. With no live text yet, Stop waits for all committed turns.
 The deployed `gpt-live-transcribe` API rejects server-side turn detection, so the
 session uses `turn_detection: null`; the 500 ms threshold stays in the capture path.
 
@@ -39,8 +41,7 @@ OpenRouter chat model edit the completed transcript. The default cleanup model
 is `google/gemma-4-31b-it`; the model field is editable. This adds one text-only
 request after transcription, with a **Cleaning up transcript...** status.
 Gemma cleanup uses only OpenRouter's `cerebras/fp16` endpoint with thinking
-disabled. If Cerebras is unavailable, cleanup reports an error and keeps the
-draft for retry. Choosing Gemini 3.8 Flash still prefers Google AI Studio Priority
+disabled. Choosing Gemini 3.8 Flash still prefers Google AI Studio Priority
 with provider fallback; other models retain throughput-based routing.
 
 **Editing instructions** is the app's single editable cleanup prompt. Its default
@@ -62,8 +63,9 @@ applies when upgrading from versions that predate the separate cleanup step.
 
 The recording snapshots its cleanup settings at Start. History stores those settings,
 the original `draft-transcript.txt`, and the cleaned final transcript with all audio.
-If cleanup fails or is cancelled, the draft remains available. Retrying that cleanup
-reuses the draft; changing cleanup settings only invalidates the edited result.
+Cleanup is optional: if it fails or takes more than 20 seconds, SuperSamuel pastes
+and archives the draft, without an error. A cancelled cleanup keeps the draft for a
+retry; changing cleanup settings only invalidates the edited result.
 Turning cleanup off delivers transcription directly. Cleanup is off by default.
 
 On macOS 26 and newer, the recording overlay and the settings window both use
@@ -240,9 +242,21 @@ in the menu, overlay, and recovery dialog do not ask for another confirmation.
 The manifest records model, instructions, dictionary, live delay, capture
 continuity, and the microphone used for each recorded part.
 
-When processing fails, the overlay shows the words the recording still has (the
-draft, the live text, or the transcribed parts) with **Copy**, **Retry**, and
-**Trash**. **Copy Last Transcript** in the menu returns the same words.
+## After Stop
+
+The recording window closes at Stop. The transcript finishes in the background,
+the menu bar shows `SS ...`, and the result is pasted. Option+Space does nothing
+while the transcript finishes, so a second press just after Stop cannot cancel it.
+To cancel, choose **Cancel Transcription** in the menu bar.
+
+If live transcription heard no words, the recording counts as no speech at once,
+without a second request to OpenRouter, and moves to the macOS Trash. A one-part
+recording that OpenRouter returns as empty also counts as no speech.
+
+When a later step fails but the recording has words (the draft, the live text, or
+the transcribed parts), SuperSamuel pastes those words instead of an error. The
+recording stays in **Unsent Recordings** for a retry. Only a failure without any
+words opens the window, with **Copy**, **Retry**, and **Trash**.
 
 Explicit **Retry** or **Send Recording** transcribes the saved audio afresh using
 current settings, including recordings previously classified as no speech.
@@ -318,7 +332,8 @@ measured synthetic timings, and remaining hardware checks.
 - Disable realtime and confirm the saved-recording path still transcribes.
 - Interrupt the network during recording and confirm the saved M4A is used as
   the fallback.
-- Cancel during transcription and confirm nothing is pasted.
+- Press Option+Space twice quickly to stop, and confirm the transcript is pasted.
+- Cancel from the menu bar during transcription and confirm nothing is pasted.
 - Confirm the cancelled recording appears under **Unsent Recordings**.
 - Relaunch with an unsent recording and test Send, Keep, Reveal, and Trash.
 - Choose Keep for Later and confirm a new recording can start.

@@ -35,8 +35,14 @@ final class TextInsertionService {
     }
 
     func pasteClipboardContents(into targetApplication: NSRunningApplication?) {
-        targetApplication?.activate(options: [.activateIgnoringOtherApps])
+        // Usually the app is still in front. Then paste at once.
+        guard let targetApplication, !targetApplication.isActive else {
+            simulateCommandV()
+            return
+        }
+        targetApplication.activate(options: [.activateIgnoringOtherApps])
 
+        // Give the app time to come to the front.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) { [weak self] in
             self?.simulateCommandV()
         }

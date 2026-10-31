@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 enum RealtimeTranscriptionError: LocalizedError {
     case missingAPIKey
@@ -256,7 +257,11 @@ final class RealtimeTranscriptionService {
             <= maximumContextCharacters
     }
 
-    func finish() async throws -> String {
+    /// Commits the last audio and returns the transcript. Once some text exists, the
+    /// wait for the final text of the last turn ends `maximumWait` seconds after
+    /// `stoppedAt`, the moment that you pressed Stop, and the text received so far is
+    /// returned. With no text yet, it waits for the turns.
+    func finish(stoppedAt: Date = Date(), maximumWait: TimeInterval = 0.3) async throws -> String {
         try await waitForReady()
         if let terminalError { throw terminalError }
         state = .finishing
@@ -278,8 +283,13 @@ final class RealtimeTranscriptionService {
         while Date() < deadline {
             if let terminalError { throw terminalError }
             if state == .cancelled { throw CancellationError() }
-            if pendingCommitEventIDs.isEmpty, assembler.pendingItemIDs.isEmpty {
+            let settled = pendingCommitEventIDs.isEmpty && assembler.pendingItemIDs.isEmpty
+            if settled || (!assembler.combinedText.isEmpty && Date().timeIntervalSince(stoppedAt) >= maximumWait) {
                 let transcript = assembler.combinedText
+                if !settled {
+                    Logger(subsystem: "com.supersamuel.app", category: "Timing")
+                        .notice("Stop used the live text without the final text of the last turn")
+                }
                 closeNormally()
                 guard !transcript.isEmpty else { throw RealtimeTranscriptionError.noSpeechDetected }
                 return transcript

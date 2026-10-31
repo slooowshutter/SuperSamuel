@@ -1,5 +1,10 @@
 import AppKit
 import Foundation
+import os
+
+/// Milliseconds from Stop to each step. Read with:
+/// log show --last 10m --predicate 'subsystem == "com.supersamuel.app"'
+private let timing = Logger(subsystem: "com.supersamuel.app", category: "Timing")
 
 private struct DeliveryOptions {
     let targetApplication: NSRunningApplication?
@@ -49,6 +54,7 @@ final class DictationController {
     private var savedCaptureContinuous = true
     private var nextMicrophoneRecoveryAt = Date.distantPast
     private var persistentMenuRefreshTask: Task<Void, Never>?
+    private var stoppedAt = Date()
 
     private struct RecordingConfiguration {
         let model: String
@@ -163,14 +169,23 @@ final class DictationController {
             return
         }
 
-        toggleRecording()
+        handleRecordingCommand()
+    }
+
+    /// The menu item and the window button: they also cancel a transcript in progress.
+    private func handleRecordingCommand() {
+        if appState.phase == .transcribing {
+            cancelProcessing()
+        } else {
+            toggleRecording()
+        }
     }
 
     private func configureMenuBar() {
         let menuBarController = MenuBarController(settings: settings)
         menuBarController.onToggleRecording = { [weak self] in
             Task { @MainActor [weak self] in
-                self?.toggleRecording()
+                self?.handleRecordingCommand()
             }
         }
         menuBarController.onCopyLastTranscript = { [weak self] in
@@ -231,7 +246,9 @@ final class DictationController {
         case .recording:
             stopAndProcessRecording()
         case .transcribing:
-            cancelProcessing()
+            // A second press just after Stop must not throw the transcript away.
+            // Cancel from the menu bar instead.
+            break
         }
     }
 
@@ -324,6 +341,7 @@ final class DictationController {
         guard let sessionID = activeRecordingID else {
             return
         }
+        stoppedAt = Date()
 
         if case .interrupted(let message) = audioCapture.checkHealth() {
             savedCaptureContinuous = false
@@ -577,7 +595,8 @@ final class DictationController {
         processingSessionID = sessionID
         appState.setPhase(.transcribing)
         appState.setProgressMessage("Preparing saved recording...")
-        overlayController?.show()
+        // The transcript finishes in the background. The menu bar shows the progress.
+        overlayController?.hide()
         menuBarController?.updateStatusTitle(for: .transcribing)
         refreshPersistentMenus()
 
@@ -608,7 +627,9 @@ final class DictationController {
             } else if let realtimeSession {
                 appState.setProgressMessage("Finishing live transcript...")
                 do {
-                    let finishedTranscript = try await realtimeSession.finish()
+                    timing.notice("Finishing live transcript: \(self.msSinceStop) ms after Stop")
+                    let finishedTranscript = try await realtimeSession.finish(stoppedAt: stoppedAt)
+                    timing.notice("Live transcript final: \(self.msSinceStop) ms after Stop")
                     let session = try recordingStore.load(sessionID)
                     if session.canUseLiveTranscript {
                         realtimeTranscript = finishedTranscript
@@ -616,6 +637,10 @@ final class DictationController {
                 } catch is CancellationError {
                     realtimeSession.cancel()
                     throw CancellationError()
+                } catch RealtimeTranscriptionError.noSpeechDetected {
+                    // Live transcription heard all the audio and found no words.
+                    realtimeSession.cancel()
+                    throw OpenRouterServiceError.noSpeechDetected
                 } catch {
                     try? recordingStore.saveLivePartialTranscript(realtimeSession.currentTranscript, sessionID: sessionID)
                     realtimeSession.cancel()
@@ -642,6 +667,7 @@ final class DictationController {
             guard isCurrentOperation(operationID) else {
                 return
             }
+            timing.notice("Transcript ready (cleanup and history): \(self.msSinceStop) ms after Stop")
 
             completeOperation(
                 transcript: result.transcript,
@@ -655,16 +681,20 @@ final class DictationController {
 
             let message: String
             if case OpenRouterServiceError.noSpeechDetected = error {
-                try? recordingStore.markReady(
-                    sessionID,
-                    message: "No speech detected. The saved audio remains available."
-                )
+                // Nothing to keep in Unsent Recordings. The macOS Trash still has it.
+                try? recordingStore.trashSession(sessionID)
                 resetToIdle()
-                appState.setProgressMessage("No speech detected. Ready to record.")
             } else if isCancellation(error) {
                 message = "Processing cancelled. The recording was kept."
                 try? recordingStore.markReady(sessionID, message: message)
                 resetToIdle()
+            } else if let words = savedText(for: sessionID) {
+                // A later step failed, for example cleanup, but the words exist. Paste
+                // them. The recording stays in Unsent Recordings for a retry.
+                try? recordingStore.markFailed(sessionID, message: error.localizedDescription)
+                completeOperation(transcript: words, captureWarning: nil, delivery: delivery)
+                refreshPersistentMenus()
+                return
             } else {
                 message = error.localizedDescription
                 try? recordingStore.markFailed(sessionID, message: message)
@@ -716,6 +746,7 @@ final class DictationController {
             autoPaste: canAutoPaste,
             restoreClipboard: delivery.restoreClipboard
         )
+        timing.notice("Paste sent: \(self.msSinceStop) ms after Stop")
 
         appState.setPhase(.idle)
         appState.setElapsed(seconds: 0)
@@ -726,6 +757,10 @@ final class DictationController {
         }
         menuBarController?.updateStatusTitle(for: .idle)
         refreshPersistentMenus()
+    }
+
+    private var msSinceStop: Int {
+        Int(Date().timeIntervalSince(stoppedAt) * 1000)
     }
 
     private func cancelProcessing() {

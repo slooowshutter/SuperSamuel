@@ -1,5 +1,6 @@
 import AVFoundation
 import Foundation
+import os
 
 enum RecordingProcessingError: LocalizedError {
     case incompleteSavedCapture
@@ -95,12 +96,25 @@ final class RecordingProcessor {
                     stage: .cleaningUp, currentPart: 1, totalParts: 1,
                     transcriptPreview: draftTranscript
                 ))
-                let cleaned = try await cleanupService.cleanUp(
-                    apiKey: apiKey, transcript: draftTranscript, configuration: cleanup
-                )
+                let cleanupStart = Date()
+                defer {
+                    Logger(subsystem: "com.supersamuel.app", category: "Timing")
+                        .notice("Cleanup with \(cleanup.model, privacy: .public): \(Int(Date().timeIntervalSince(cleanupStart) * 1000)) ms")
+                }
+                do {
+                    let cleaned = try await cleanupService.cleanUp(
+                        apiKey: apiKey, transcript: draftTranscript, configuration: cleanup
+                    )
+                    finalTranscript = normalized(cleaned) ?? draftTranscript
+                } catch {
+                    // Cleanup is optional. If it fails, the draft is the transcript.
+                    // A cancel still cancels.
+                    if error is CancellationError || (error as? URLError)?.code == .cancelled {
+                        throw error
+                    }
+                    finalTranscript = draftTranscript
+                }
                 try Task.checkCancellation()
-                guard let text = normalized(cleaned) else { throw OpenRouterServiceError.emptyTranscript }
-                finalTranscript = text
             } else {
                 finalTranscript = draftTranscript
             }
@@ -232,7 +246,10 @@ final class RecordingProcessor {
                             chunkID: item.0.id
                         )
                         rawTranscript = transcript
-                    } catch OpenRouterServiceError.emptyTranscript where isSilent {
+                    } catch OpenRouterServiceError.emptyTranscript where isSilent || chunks.count == 1 {
+                        // With one part, no text means no speech. With several parts, an
+                        // empty part between parts with text stays an error, so no words
+                        // go missing without a warning.
                         try Task.checkCancellation()
                         rawTranscript = nil
                     }
